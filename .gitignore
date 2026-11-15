@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+var/
+reports/
+.pytest_cache/
+.coverage
+htmlcov/

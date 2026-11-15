@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "portal_title": "Aurora Open Data Sandbox",
+  "portal_description": "A synthetic publication portal used to exercise offline release artifact intake.",
+  "publisher": "Aurora Fixture Data Guild",
+  "datasets": [
+    {
+      "id": "civic-budget",
+      "title": "Civic Budget Tidy Tables",
+      "summary": "Synthetic municipal budget extracts arranged for tabular intake tests.",
+      "publisher": "Aurora Municipal Data Office",
+      "license": "CC-BY-4.0 (synthetic fixture)",
+      "versions": [
+        {
+          "id": "2025.1",
+          "label": "2025 Q1 stable",
+          "channel": "stable",
+          "released_at": "2025-04-02",
+          "notes": "First stable synthetic budget release.",
+          "artifacts": [
+            {
+              "name": "budget_lines.csv",
+              "media_type": "text/csv",
+              "content": "department,fiscal_year,account,amount_usd\nParks,2025,5100,184200\nLibrary,2025,5200,96750\nRoads,2025,5300,241000\n",
+              "sha256": "25897e9e8ba29f43949ea80423e9ebeae6a23217ca34a34ff921b3947228b92b"
+            },
+            {
+              "name": "budget_notes.txt",
+              "media_type": "text/plain",
+              "content": "Synthetic release notes for the municipal budget tables.\nEvery value in this fixture is invented for offline testing.\nRows: 3 | Columns: 4 | Encoding: UTF-8\n",
+              "sha256": "814dcd8750c6f5b64d44902260772f8b29887b71f073f7123c09507190b2cbd5",
+              "transient_failures": 1
+            }
+          ]
+        },
+        {
+          "id": "2025.2-beta",
+          "label": "2025 Q2 beta preview",
+          "channel": "beta",
+          "released_at": "2025-05-10",
+          "notes": "Preview release retained for channel filtering tests.",
+          "artifacts": [
+            {
+              "name": "budget_preview.csv",
+              "media_type": "text/csv",
+              "content": "department,fiscal_year,account,preview_amount_usd\nParks,2025,5100,190000\nLibrary,2025,5200,97000\n",
+              "sha256": "9639c58029e2af9df67a85a6c0580b6e28120a09f3c3f491447255c1e424e438"
+            }
+          ]
+        },
+        {
+          "id": "nightly-2025-05-11",
+          "label": "Nightly snapshot",
+          "channel": "nightly",
+          "released_at": "2025-05-11",
+          "notes": "Excluded by the demo channel allow-list.",
+          "artifacts": [
+            {
+              "name": "budget_nightly.csv",
+              "media_type": "text/csv",
+              "content": "department,fiscal_year,account,nightly_amount_usd\nParks,2025,5100,0\n",
+              "sha256": "5aab6d98a5ec4ce5ed00270c00c57100ce92dc1b14939eae5cfbad6732383f45"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transit-counts",
+      "title": "Commuter Counts by Station",
+      "summary": "Fictional station boarding counts and labels for release file tests.",
+      "publisher": "Rivergate Transit Analytics Unit",
+      "license": "CC0-1.0 (synthetic fixture)",
+      "versions": [
+        {
+          "id": "v3",
+          "label": "Version 3 counts",
+          "channel": "stable",
+          "released_at": "2025-03-20",
+          "notes": "Stable counts with a companion manifest.",
+          "artifacts": [
+            {
+              "name": "stations.csv",
+              "media_type": "text/csv",
+              "content": "station_code,station_name,weekday_boardings\nALPHA-01,Willow Gate,18320\nBETA-02,Copper Yard,12740\nGAMMA-03,North Loop,22115\n",
+              "sha256": "2821089e41ee4a5da96e64b51fb699999f0cc11bc0e08c011eb0d6dda8dd78f8"
+            },
+            {
+              "name": "stations-manifest.txt",
+              "media_type": "text/plain",
+              "content": "row_count=3\ncolumns=3\ntransform=fixture-counts-v3\n",
+              "sha256": "b02f334f2e2a9b9281340f0c35c32b17667121d0c7c89216b54899b57602e2df"
+            }
+          ]
+        },
+        {
+          "id": "v3-labels",
+          "label": "Version 3 label pack",
+          "channel": "stable",
+          "released_at": "2025-03-21",
+          "notes": "Label pack published one day after counts.",
+          "artifacts": [
+            {
+              "name": "station_labels.csv",
+              "media_type": "text/csv",
+              "content": "station_code,short_label,zone\nALPHA-01,Willow,W1\nBETA-02,Copper,E2\nGAMMA-03,North,N3\n",
+              "sha256": "f91fdfcae07925a71e1b79ad31a2192755e48068b0aa581adabe5bcf111bfd37"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "air-quality",
+      "title": "Neighborhood Air Quality Samples",
+      "summary": "Invented particulate readings used to demonstrate checksum quarantine.",
+      "publisher": "Northline Air Quality Collective",
+      "license": "CC-BY-4.0 (synthetic fixture)",
+      "versions": [
+        {
+          "id": "2025-01",
+          "label": "January 2025 sample pack",
+          "channel": "stable",
+          "released_at": "2025-01-30",
+          "notes": "One artifact deliberately declares the wrong digest.",
+          "artifacts": [
+            {
+              "name": "samples.csv",
+              "media_type": "text/csv",
+              "content": "site_id,observed_on,pm25,pm10\nN-01,2025-01-03,8,19\nN-02,2025-01-03,11,24\nN-03,2025-01-03,6,16\n",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            {
+              "name": "samples-readme.md",
+              "media_type": "text/markdown",
+              "content": "# Air quality fixture\n\nThese observations are synthetic and exist only to exercise the release intake pipeline.\nNo measurement was taken from a real location.\n",
+              "sha256": "8efb541f5dabc2015aef95123362ea6a286f0671eeef300eb55e092e3cf2da8c"
+            },
+            {
+              "name": "samples.jsonl",
+              "media_type": "application/x-ndjson",
+              "content": "{\"site_id\":\"N-01\",\"observed_on\":\"2025-01-03\",\"pm25\":8,\"pm10\":19}\n{\"site_id\":\"N-02\",\"observed_on\":\"2025-01-03\",\"pm25\":11,\"pm10\":24}\n{\"site_id\":\"N-03\",\"observed_on\":\"2025-01-03\",\"pm25\":6,\"pm10\":16}\n",
+              "sha256": "10de925df96e45f4d15ff121ff845827ad1d0a61d8cd569d8a11e3d20a64fd38"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

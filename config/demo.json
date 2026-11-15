@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "root": "..",
+  "portal": {
+    "fixture": "fixtures/portal.json",
+    "bind_host": "127.0.0.1",
+    "base_url": "http://127.0.0.1:18765"
+  },
+  "discovery": {
+    "max_datasets": 20,
+    "max_versions": 10,
+    "max_artifacts": 20,
+    "max_pages": 100,
+    "channels": ["stable", "beta"]
+  },
+  "download": {
+    "work_dir": "var",
+    "artifact_dir": "var/artifacts",
+    "quarantine_dir": "var/quarantine",
+    "db_path": "var/releaseharbor.sqlite3",
+    "report_dir": "reports",
+    "retries": 2,
+    "retry_backoff_ms": 0,
+    "chunk_size": 32768,
+    "max_artifact_bytes": 2097152
+  },
+  "security": {
+    "request_timeout_seconds": 5
+  },
+  "clock": {
+    "mode": "fixed",
+    "fixed": "2026-01-15T12:00:00Z"
+  },
+  "console": {
+    "port": 18766
+  },
+  "demo": {
+    "reset_on_start": true
+  }
+}
