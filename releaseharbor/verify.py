@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import IntegrityError
-from .util import ensure_directory, safe_filename, safe_segment, sha256_file
+from .util import ensure_directory, safe_filename, safe_segment, sha256_bytes, sha256_file
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,25 @@ class IntegrityReport:
     @property
     def accepted(self) -> bool:
         return self.size_ok and self.digest_ok
+
+
+@dataclass(frozen=True)
+class ChunkVerification:
+    actual_sha256: str | None
+    ok: bool
+
+
+def verify_chunk_region(
+    path: Path, start: int, length: int, expected_sha256: str
+) -> ChunkVerification:
+    """Hash exactly ``length`` bytes of ``path`` at ``start`` and compare on disk truth."""
+    with path.open("rb") as handle:
+        handle.seek(start)
+        data = handle.read(length)
+    if len(data) != length:
+        return ChunkVerification(actual_sha256=None, ok=False)
+    actual = sha256_bytes(data)
+    return ChunkVerification(actual_sha256=actual, ok=actual == expected_sha256.lower())
 
 
 def verify_file(path: Path, expected_size: int, expected_sha256: str) -> IntegrityReport:
