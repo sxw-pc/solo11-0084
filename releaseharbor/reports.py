@@ -48,6 +48,19 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
     ).fetchall()
     statuses = {row["status"]: row["amount"] for row in rows}
     events = _event_rows(connection, run_id)
+    schema_counts = connection.execute(
+        "SELECT "
+        "COUNT(*) AS total, "
+        "COALESCE(SUM(validation_ok), 0) AS valid, "
+        "COALESCE(SUM(CASE WHEN positional_compatible = 1 THEN 1 ELSE 0 END), 0) "
+        "AS positional_ok, "
+        "COALESCE(SUM(CASE WHEN name_bound_compatible = 1 THEN 1 ELSE 0 END), 0) "
+        "AS name_bound_ok, "
+        "COALESCE(SUM(CASE WHEN reference_error IS NOT NULL THEN 1 ELSE 0 END), 0) "
+        "AS reference_errors "
+        "FROM csv_schema_evaluations WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
     return {
         "datasets": datasets,
         "versions": versions,
@@ -61,10 +74,76 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
         "blocked_targets": sum(1 for item in events if item["code"] == "target.blocked"),
         "warnings": sum(1 for item in events if item["level"] == "warning"),
         "events": len(events),
+        "csv_schemas": {
+            "evaluated": schema_counts["total"],
+            "schema_valid": schema_counts["valid"],
+            "schema_invalid": schema_counts["total"] - schema_counts["valid"],
+            "positional_compatible": schema_counts["positional_ok"],
+            "name_bound_compatible": schema_counts["name_bound_ok"],
+            "reference_errors": schema_counts["reference_errors"],
+        },
     }
 
 
-def _artifact_dict(row: sqlite3.Row) -> dict:
+def _schema_map(connection: sqlite3.Connection, run_id: str) -> dict[str, dict]:
+    rows = connection.execute(
+        "SELECT * FROM csv_schema_evaluations WHERE run_id = ? ORDER BY artifact_uid",
+        (run_id,),
+    ).fetchall()
+    result = {}
+    for row in rows:
+        try:
+            validation = json.loads(row["validation_json"])
+        except json.JSONDecodeError:
+            validation = {}
+        try:
+            declaration_summary = json.loads(row["declaration_summary_json"])
+        except json.JSONDecodeError:
+            declaration_summary = {}
+        predecessor_summary = None
+        if row["predecessor_summary_json"]:
+            try:
+                predecessor_summary = json.loads(row["predecessor_summary_json"])
+            except json.JSONDecodeError:
+                predecessor_summary = None
+        try:
+            contracts = json.loads(row["contracts_json"])
+        except json.JSONDecodeError:
+            contracts = []
+        result[row["artifact_uid"]] = {
+            "schema_version": row["schema_version"],
+            "declaration": declaration_summary,
+            "predecessor": (
+                None
+                if predecessor_summary is None
+                else {
+                    "schema_version": row["predecessor_version"],
+                    "fingerprint": row["predecessor_fingerprint"],
+                    "summary": predecessor_summary,
+                }
+            ),
+            "change_reason": row["change_reason"],
+            "reference_error": row["reference_error"],
+            "accepted_content": {
+                "sha256": row["content_sha256"],
+                "size": row["content_size"],
+            },
+            "validation_ok": bool(row["validation_ok"]),
+            "validation": validation,
+            "contracts": contracts,
+            "positional_compatible": (
+                None if row["positional_compatible"] is None else bool(row["positional_compatible"])
+            ),
+            "name_bound_compatible": (
+                None
+                if row["name_bound_compatible"] is None
+                else bool(row["name_bound_compatible"])
+            ),
+        }
+    return result
+
+
+def _artifact_dict(row: sqlite3.Row, schema: dict | None = None) -> dict:
     return {
         "uid": row["artifact_uid"],
         "filename": row["filename"],
@@ -87,6 +166,7 @@ def _artifact_dict(row: sqlite3.Row) -> dict:
             if row["error_code"] is None
             else {"code": row["error_code"], "detail": row["error_detail"]}
         ),
+        "schema": schema,
     }
 
 
@@ -106,6 +186,7 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
         "ORDER BY dataset_id, version_id, filename",
         (run_id,),
     ).fetchall()
+    schema_by_artifact = _schema_map(connection, run_id)
     events = _event_rows(connection, run_id)
     summary = collect_counts(connection, run_id)
     try:
@@ -117,7 +198,7 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
     by_version: dict[tuple[str, str], list[dict]] = {}
     for artifact in artifacts:
         by_version.setdefault((artifact["dataset_id"], artifact["version_id"]), []).append(
-            _artifact_dict(artifact)
+            _artifact_dict(artifact, schema_by_artifact.get(artifact["artifact_uid"]))
         )
     by_dataset: dict[str, list[dict]] = {}
     for version in versions:
@@ -204,9 +285,42 @@ def _markdown(report: dict) -> str:
                     f"{artifact['expected']['size']} | "
                     f"{'' if observed is None else observed} | {artifact['attempts']} |"
                 )
+                schema = artifact.get("schema")
+                if schema is not None:
+                    lines.extend(_schema_lines(schema))
             lines.append("")
     lines.append("End of deterministic fixture report.\n")
     return "\n".join(lines)
+
+
+def _schema_lines(schema: dict) -> list[str]:
+    lines = [
+        f"    - Schema `{schema['schema_version']}`: byte-accepted content "
+        f"sha256 `{schema['accepted_content']['sha256']}` "
+        f"({schema['accepted_content']['size']} bytes); schema validation "
+        f"**{'passed' if schema['validation_ok'] else 'failed'}**"
+    ]
+    if schema["change_reason"]:
+        lines.append(f"    - Change reason: {schema['change_reason']}")
+    if schema["reference_error"]:
+        lines.append(f"    - Cross-version reference error: {schema['reference_error']}")
+    for contract in schema["contracts"]:
+        verdict = "compatible" if contract["compatible"] else "NOT compatible"
+        lines.append(
+            f"    - Consumer contract `{contract['contract']}`: **{verdict}**"
+        )
+        for reason in contract["reasons"]:
+            lines.append(f"        - {reason}")
+    if not schema["validation_ok"]:
+        for error in schema["validation"].get("errors", [])[:5]:
+            location = f"line {error.get('line', 0)}"
+            if error.get("column"):
+                location += f", column {error['column']}"
+            lines.append(f"    - {error['code']} at {location}: {error['reason']}")
+        fatal = schema["validation"].get("fatal")
+        if fatal:
+            lines.append(f"    - fatal {fatal['code']} at line {fatal['line']}: {fatal['reason']}")
+    return lines
 
 
 def _manifest_csv(report: dict) -> str:

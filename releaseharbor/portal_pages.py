@@ -5,6 +5,7 @@ from __future__ import annotations
 from html import escape
 
 from .fixture import DatasetFixture, PortalFixture, VersionFixture
+from .util import canonical_json
 
 _STYLE = """
 body{font-family:system-ui,sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;color:#17211b;background:#f7f8f3}
@@ -84,13 +85,19 @@ def render_version(
     rows = []
     for artifact in version.artifacts:
         href = f"/files/{dataset.dataset_id}/{version.version_id}/{artifact.name}"
+        schema_attr = (
+            f' data-schema="{escape(canonical_json(artifact.schema.to_dict()), quote=True)}"'
+            if artifact.schema is not None
+            else ""
+        )
         rows.append(
             '<tr><td><a class="artifact-link" href="'
             + escape(href)
             + f'" data-filename="{escape(artifact.name)}" '
             + f'data-size="{artifact.declared_size}" '
             + f'data-sha256="{escape(artifact.declared_sha256)}" '
-            + f'data-media-type="{escape(artifact.media_type)}">{escape(artifact.name)}</a></td>'
+            + f'data-media-type="{escape(artifact.media_type)}"{schema_attr}>'
+            + f"{escape(artifact.name)}</a></td>"
             + f"<td>{escape(artifact.media_type)}</td><td>{artifact.declared_size}</td>"
             + f"<td><code>{escape(artifact.declared_sha256)}</code></td></tr>"
         )

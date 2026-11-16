@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Callable
 from urllib.parse import urldefrag, urljoin
 
+from .csvschema import CsvSchemaError, SchemaDeclaration
 from .errors import DiscoveryError, SecurityBoundaryError, TransportError
 from .htmlparse import has_class, parse_portal_html
 from .httpclient import SafeHttpClient
@@ -28,6 +30,7 @@ class ArtifactRef:
     media_type: str
     expected_size: int
     expected_sha256: str
+    schema: SchemaDeclaration | None = None
 
     @property
     def artifact_uid(self) -> str:
@@ -252,6 +255,7 @@ class Discovery:
                     media_type=attributes["media_type"],
                     expected_size=attributes["size"],
                     expected_sha256=attributes["sha256"],
+                    schema=attributes["schema"],
                 )
             )
         version.artifacts.sort(key=lambda item: item.filename)
@@ -289,10 +293,37 @@ class Discovery:
             if not _MEDIA_TYPE.fullmatch(media_type):
                 self._issue("artifact.metadata_invalid", name, {"reason": "invalid media type"})
                 return None
+            schema = self._schema_attr(anchor.attrs.get("data-schema"), name, media_type)
+            if schema is False:
+                return None
             return {
                 "filename": name,
                 "sha256": normalize_sha256(sha),
                 "size": size,
                 "media_type": media_type,
+                "schema": schema,
             }
         return None
+
+    def _schema_attr(self, raw: str, name: str, media_type: str) -> SchemaDeclaration | bool:
+        if not raw:
+            return None
+        if media_type != "text/csv":
+            self._issue(
+                "artifact.metadata_invalid",
+                name,
+                {"reason": "schema declaration is only valid for text/csv artifacts"},
+            )
+            return False
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            self._issue(
+                "artifact.metadata_invalid", name, {"reason": "schema declaration is not JSON"}
+            )
+            return False
+        try:
+            return SchemaDeclaration.from_dict(payload)
+        except CsvSchemaError as exc:
+            self._issue("artifact.metadata_invalid", name, {"reason": f"invalid schema: {exc}"})
+            return False

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from .csvschema import SchemaDeclaration, schema_lineage_key
 from .discovery import ArtifactRef, DiscoveredDataset, DiscoveredVersion
 from .util import canonical_json, stable_id
 
@@ -197,3 +198,132 @@ class Ledger:
                 }
             )
         return result
+
+    def record_schema_declaration(self, run_id: str, ref: ArtifactRef) -> sqlite3.Row:
+        """Persist an append-only declaration history entry.
+
+        Re-encountering the exact same declaration is idempotent; a changed
+        declaration for the same (lineage, schema_version) inserts a new row so
+        every prior verdict stays reproducible.
+        """
+        declaration = ref.schema
+        assert declaration is not None
+        lineage = schema_lineage_key(ref.dataset_id, ref.filename)
+        uid = stable_id(lineage, declaration.schema_version, declaration.fingerprint())
+        now = self.clock.now()
+        self.connection.execute(
+            "INSERT INTO csv_schema_declarations(declaration_uid, lineage_key, dataset_id, "
+            "filename, schema_version, predecessor, change_reason, fingerprint, "
+            "declaration_json, first_seen_run_id, last_run_id, discovered_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(lineage_key, schema_version, fingerprint) DO UPDATE SET "
+            "last_run_id = excluded.last_run_id, updated_at = excluded.updated_at",
+            (
+                uid,
+                lineage,
+                ref.dataset_id,
+                ref.filename,
+                declaration.schema_version,
+                declaration.predecessor,
+                declaration.change_reason,
+                declaration.fingerprint(),
+                canonical_json(declaration.to_dict()),
+                run_id,
+                run_id,
+                now,
+                now,
+            ),
+        )
+        self.connection.commit()
+        return self.get_schema_declaration(uid)
+
+    def get_schema_declaration(self, declaration_uid: str) -> sqlite3.Row:
+        row = self.connection.execute(
+            "SELECT * FROM csv_schema_declarations WHERE declaration_uid = ?",
+            (declaration_uid,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(declaration_uid)
+        return row
+
+    def lineage_declarations(self, lineage_key: str) -> list[SchemaDeclaration]:
+        rows = self.connection.execute(
+            "SELECT declaration_json FROM csv_schema_declarations "
+            "WHERE lineage_key = ? ORDER BY discovered_at, declaration_uid",
+            (lineage_key,),
+        ).fetchall()
+        declarations = []
+        for row in rows:
+            try:
+                declarations.append(SchemaDeclaration.from_dict(json.loads(row["declaration_json"])))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return declarations
+
+    def find_predecessor_declaration(
+        self, lineage_key: str, predecessor_version: str
+    ) -> SchemaDeclaration | None:
+        rows = self.connection.execute(
+            "SELECT declaration_json FROM csv_schema_declarations "
+            "WHERE lineage_key = ? AND schema_version = ? "
+            "ORDER BY discovered_at DESC, declaration_uid DESC",
+            (lineage_key, predecessor_version),
+        ).fetchall()
+        for row in rows:
+            try:
+                return SchemaDeclaration.from_dict(json.loads(row["declaration_json"]))
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return None
+
+    def save_schema_evaluation(self, run_id: str, ref: ArtifactRef, evaluation: dict) -> str:
+        """Persist one immutable per-run schema evaluation (idempotent on rerun)."""
+        uid = stable_id(run_id, ref.artifact_uid)
+        self.connection.execute(
+            "INSERT OR IGNORE INTO csv_schema_evaluations(evaluation_uid, run_id, artifact_uid, "
+            "lineage_key, dataset_id, version_id, filename, content_sha256, content_size, "
+            "schema_version, declaration_fingerprint, declaration_summary_json, "
+            "predecessor_version, predecessor_fingerprint, predecessor_summary_json, "
+            "change_reason, validation_ok, validation_json, reference_error, "
+            "positional_compatible, name_bound_compatible, contracts_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                uid,
+                run_id,
+                ref.artifact_uid,
+                evaluation["lineage_key"],
+                ref.dataset_id,
+                ref.version_id,
+                ref.filename,
+                evaluation["content_sha256"],
+                evaluation["content_size"],
+                evaluation["schema_version"],
+                evaluation["declaration_fingerprint"],
+                canonical_json(evaluation["declaration_summary"]),
+                evaluation["predecessor_version"],
+                evaluation["predecessor_fingerprint"],
+                canonical_json(evaluation["predecessor_summary"])
+                if evaluation["predecessor_summary"] is not None
+                else None,
+                evaluation["change_reason"],
+                1 if evaluation["validation_ok"] else 0,
+                canonical_json(evaluation["validation"]),
+                evaluation["reference_error"],
+                None
+                if evaluation["positional_compatible"] is None
+                else int(evaluation["positional_compatible"]),
+                None
+                if evaluation["name_bound_compatible"] is None
+                else int(evaluation["name_bound_compatible"]),
+                canonical_json(evaluation["contracts"]),
+                self.clock.now(),
+            ),
+        )
+        self.connection.commit()
+        return uid
+
+    def get_schema_evaluation(self, run_id: str, artifact_uid: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM csv_schema_evaluations WHERE run_id = ? AND artifact_uid = ?",
+            (run_id, artifact_uid),
+        ).fetchone()

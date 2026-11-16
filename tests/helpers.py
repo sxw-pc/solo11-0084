@@ -84,4 +84,5 @@ def ref_for(config, dataset: str, version: str, filename: str) -> ArtifactRef:
         media_type=art.media_type,
         expected_size=art.declared_size,
         expected_sha256=art.declared_sha256,
+        schema=art.schema,
     )

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .clock import Clock
 from .collector import ArtifactProcessor
+from .csvschema_service import CsvSchemaService
 from .db import connect
 from .discovery import Discovery, DiscoveryError, DiscoveryResult
 from .downloader import Downloader
@@ -88,7 +89,19 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
             raise DiscoveryError("discovery returned no release artifacts")
 
         downloader = Downloader(config, client, clock, on_event=audit)
-        processor = ArtifactProcessor(config, client, ledger, downloader, run_id)
+        all_refs = [
+            ref
+            for dataset in result.datasets
+            for version in dataset.versions
+            for ref in version.artifacts
+        ]
+        schema_service = CsvSchemaService(ledger, run_id)
+        # Register every declared schema first so cross-version predecessor
+        # references resolve regardless of artifact processing order.
+        schema_service.prime(all_refs)
+        processor = ArtifactProcessor(
+            config, client, ledger, downloader, run_id, schema_service=schema_service
+        )
         for dataset in result.datasets:
             for version in dataset.versions:
                 for ref in version.artifacts:

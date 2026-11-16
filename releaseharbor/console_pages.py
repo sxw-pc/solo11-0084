@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from html import escape
 from urllib.parse import quote
 
@@ -163,7 +164,7 @@ def artifact_list_page(rows: list[dict], selected_status: str) -> str:
     return layout("Artifacts", body)
 
 
-def artifact_detail_page(row: dict, events: list[dict]) -> str:
+def artifact_detail_page(row: dict, events: list[dict], schema_rows: list[dict] | None = None) -> str:
     event_rows = "".join(
         "<tr>"
         f"<td>{_e(event['seq'])}</td><td>{_e(event['ts'])}</td>"
@@ -205,12 +206,83 @@ def artifact_detail_page(row: dict, events: list[dict]) -> str:
         f'<p>Status <strong class="status-{_e(row["status"])}">{_e(row["status"])}</strong></p>'
         f"<section class=\"panel\"><table><tbody>{definition_rows}</tbody></table></section>"
         + error_panel
+        + _schema_panel(schema_rows)
         + '<section class="panel"><h2>Audit events</h2><table><thead><tr><th>Seq</th>'
         "<th>Time</th><th>Level</th><th>Code</th><th>Detail</th></tr></thead><tbody>"
         + (event_rows or '<tr><td colspan="5" class="muted">No events.</td></tr>')
         + "</tbody></table></section></main>"
     )
     return layout(row["filename"], body)
+
+
+def _schema_panel(schema_rows: list[dict] | None) -> str:
+    if not schema_rows:
+        return ""
+    blocks = []
+    for item in schema_rows:
+        try:
+            validation = json.loads(item["validation_json"])
+        except (json.JSONDecodeError, TypeError):
+            validation = {}
+        try:
+            contracts = json.loads(item["contracts_json"])
+        except (json.JSONDecodeError, TypeError):
+            contracts = []
+        verdict_cells = "".join(
+            f"<tr><td>{_e(contract['contract'])}</td>"
+            f"<td>{_e('compatible' if contract['compatible'] else 'NOT compatible')}</td>"
+            f"<td>{_e('; '.join(contract['reasons']))}</td></tr>"
+            for contract in contracts
+        )
+        validation_state = "passed" if item["validation_ok"] else "failed"
+        error_rows = "".join(
+            "<tr>"
+            f"<td>{_e(error.get('line'))}</td><td>{_e(error.get('column'))}</td>"
+            f"<td>{_e(error.get('code'))}</td><td>{_e(error.get('reason'))}</td></tr>"
+            for error in validation.get("errors", [])
+        )
+        fatal = validation.get("fatal")
+        if fatal:
+            error_rows += (
+                "<tr>"
+                f"<td>{_e(fatal.get('line'))}</td><td>{_e(fatal.get('column'))}</td>"
+                f"<td>{_e(fatal.get('code'))}</td><td>{_e(fatal.get('reason'))}</td></tr>"
+            )
+        blocks.append(
+            '<section class="panel"><h3>Schema evaluation '
+            f"<code>{_e(item['schema_version'])}</code> "
+            f"(run <code>{_e(item['run_id'])}</code>)</h3>"
+            f"<p>Accepted content sha256 <code>{_e(item['content_sha256'])}</code> "
+            f"({_e(item['content_size'])} bytes) | declaration fingerprint "
+            f"<code>{_e(item['declaration_fingerprint'])}</code></p>"
+            f"<p>Schema validation: <strong>{_e(validation_state)}</strong> "
+            f"| records parsed: {_e(validation.get('record_count'))}</p>"
+            + (f"<p>Change reason: {_e(item['change_reason'])}</p>" if item["change_reason"] else "")
+            + (
+                f'<p class="warning">Reference error: {_e(item["reference_error"])}</p>'
+                if item["reference_error"]
+                else ""
+            )
+            + "<table><thead><tr><th>Consumer contract</th><th>Verdict</th>"
+            "<th>Reasons</th></tr></thead><tbody>"
+            + (verdict_cells or '<tr><td colspan="3" class="muted">No rulings.</td></tr>')
+            + "</tbody></table>"
+            + (
+                "<h4>First deterministic validation errors</h4>"
+                "<table><thead><tr><th>Line</th><th>Column</th><th>Code</th>"
+                "<th>Reason</th></tr></thead><tbody>"
+                + error_rows
+                + "</tbody></table>"
+                if error_rows
+                else ""
+            )
+            + "</section>"
+        )
+    return (
+        '<section class="panel"><h2>Declarative CSV schema evaluations</h2>'
+        + "".join(blocks)
+        + "</section>"
+    )
 
 
 def error_page(status: int, message: str) -> str:

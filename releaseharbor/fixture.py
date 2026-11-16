@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from .csvschema import CsvSchemaError, SchemaDeclaration
 from .errors import FixtureError, SecurityBoundaryError
 from .util import (
     load_json_file,
@@ -29,6 +30,7 @@ class ArtifactFixture:
     declared_size: int
     declared_sha256: str
     transient_failures: int
+    schema: SchemaDeclaration | None = None
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,7 @@ def _artifact(raw, label: str) -> ArtifactFixture:
         raw,
         label,
         {"name", "media_type", "content", "sha256"},
-        {"declared_size", "transient_failures"},
+        {"declared_size", "transient_failures", "schema"},
     )
     try:
         name = safe_filename(raw["name"])
@@ -129,6 +131,14 @@ def _artifact(raw, label: str) -> ArtifactFixture:
     content = content_raw.encode("utf-8")
     if len(content) > 65_536:
         raise FixtureError(f"{label}.content is too large for the fixture")
+    schema: SchemaDeclaration | None = None
+    if "schema" in raw:
+        if media_type != "text/csv":
+            raise FixtureError(f"{label}.schema is only valid for text/csv artifacts")
+        try:
+            schema = SchemaDeclaration.from_dict(raw["schema"])
+        except CsvSchemaError as exc:
+            raise FixtureError(f"{label}.schema is invalid: {exc}") from exc
     try:
         declared_sha = normalize_sha256(raw["sha256"])
     except ValueError as exc:
@@ -148,6 +158,7 @@ def _artifact(raw, label: str) -> ArtifactFixture:
         declared_size=size,
         declared_sha256=declared_sha,
         transient_failures=failures,
+        schema=schema,
     )
 
 

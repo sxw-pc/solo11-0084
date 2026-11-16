@@ -206,7 +206,15 @@ class _Handler(BaseHTTPRequestHandler):
                 (artifact_uid,),
             ).fetchall()
         ]
-        self._send(artifact_detail_page(dict(row), events))
+        schema_rows = [
+            dict(item)
+            for item in connection.execute(
+                "SELECT * FROM csv_schema_evaluations WHERE artifact_uid = ? "
+                "ORDER BY created_at, run_id",
+                (artifact_uid,),
+            ).fetchall()
+        ]
+        self._send(artifact_detail_page(dict(row), events, schema_rows))
 
 
 class ConsoleServer:

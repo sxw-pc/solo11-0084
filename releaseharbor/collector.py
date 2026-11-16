@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .csvschema_service import CsvSchemaService
 from .discovery import ArtifactRef
 from .downloader import Downloader, artifact_destination
 from .errors import IntegrityError, SecurityBoundaryError, TransportError
@@ -21,12 +22,14 @@ class ArtifactProcessor:
         ledger: Ledger,
         downloader: Downloader,
         run_id: str,
+        schema_service: CsvSchemaService | None = None,
     ) -> None:
         self.config = config
         self.client = client
         self.ledger = ledger
         self.downloader = downloader
         self.run_id = run_id
+        self.schema_service = schema_service
 
     def _event(self, code: str, ref: ArtifactRef, detail: dict, level: str = "info") -> None:
         self.ledger.record_event(self.run_id, code, ref.artifact_uid, detail, level)
@@ -50,6 +53,56 @@ class ArtifactProcessor:
         payload = self._base_detail(ref)
         payload.update({"code": code, "detail": detail})
         self._event("artifact.failed", ref, payload, "warning")
+
+    def _schema_enabled(self, ref: ArtifactRef) -> bool:
+        return (
+            self.schema_service is not None
+            and ref.media_type == "text/csv"
+            and ref.schema is not None
+        )
+
+    def _evaluate_schema(
+        self, ref: ArtifactRef, path: Path, *, accepted_sha256: str, accepted_size: int
+    ) -> None:
+        """Run declarative CSV validation; failures never change byte status."""
+        if not self._schema_enabled(ref):
+            return
+        try:
+            self.schema_service.evaluate_accepted_artifact(
+                ref,
+                path,
+                accepted_sha256=accepted_sha256,
+                accepted_size=accepted_size,
+            )
+        except Exception as exc:  # a schema crash must not erase byte acceptance
+            self._event(
+                "schema.evaluation_error",
+                ref,
+                {**self._base_detail(ref), "error": f"{type(exc).__name__}: {exc}"},
+                "error",
+            )
+            return
+        evaluation = self.ledger.get_schema_evaluation(self.run_id, ref.artifact_uid)
+        payload = self._base_detail(ref)
+        payload.update(
+            {
+                "schema_version": evaluation["schema_version"],
+                "validation_ok": bool(evaluation["validation_ok"]),
+                "positional_compatible": self._flag(evaluation["positional_compatible"]),
+                "name_bound_compatible": self._flag(evaluation["name_bound_compatible"]),
+                "reference_error": evaluation["reference_error"],
+            }
+        )
+        if not evaluation["validation_ok"]:
+            self._event("schema.invalid", ref, payload, "warning")
+        else:
+            self._event("schema.evaluated", ref, payload)
+
+    @staticmethod
+    def _flag(value) -> bool | None:
+        if value is None:
+            return None
+        return bool(value)
 
     def process(self, ref: ArtifactRef) -> str:
         row = self.ledger.upsert_artifact(self.run_id, ref)
@@ -134,6 +187,12 @@ class ArtifactProcessor:
                     }
                 )
                 self._event("artifact.skipped", ref, payload)
+                self._evaluate_schema(
+                    ref,
+                    target,
+                    accepted_sha256=existing.actual_sha256,
+                    accepted_size=existing.actual_size,
+                )
                 return "skipped"
             self._event(
                 "artifact.local_invalid",
@@ -203,6 +262,12 @@ class ArtifactProcessor:
                 }
             )
             self._event("artifact.verified", ref, payload)
+            self._evaluate_schema(
+                ref,
+                result.path,
+                accepted_sha256=integrity.actual_sha256,
+                accepted_size=integrity.actual_size,
+            )
             return "verified"
 
         quarantine_path = quarantine_file(

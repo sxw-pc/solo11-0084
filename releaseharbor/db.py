@@ -8,7 +8,7 @@ from pathlib import Path
 from .errors import ReleaseHarborError
 from .util import ensure_directory
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -88,6 +88,51 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_versions_dataset ON versions(dataset_id);
+CREATE TABLE IF NOT EXISTS csv_schema_declarations (
+    declaration_uid TEXT PRIMARY KEY,
+    lineage_key TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    predecessor TEXT,
+    change_reason TEXT,
+    fingerprint TEXT NOT NULL,
+    declaration_json TEXT NOT NULL,
+    first_seen_run_id TEXT NOT NULL,
+    last_run_id TEXT NOT NULL,
+    discovered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(lineage_key, schema_version, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_lineage ON csv_schema_declarations(lineage_key);
+CREATE TABLE IF NOT EXISTS csv_schema_evaluations (
+    evaluation_uid TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    artifact_uid TEXT NOT NULL REFERENCES artifacts(artifact_uid),
+    lineage_key TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    content_size INTEGER NOT NULL,
+    schema_version TEXT NOT NULL,
+    declaration_fingerprint TEXT NOT NULL,
+    declaration_summary_json TEXT NOT NULL,
+    predecessor_version TEXT,
+    predecessor_fingerprint TEXT,
+    predecessor_summary_json TEXT,
+    change_reason TEXT,
+    validation_ok INTEGER NOT NULL,
+    validation_json TEXT NOT NULL,
+    reference_error TEXT,
+    positional_compatible INTEGER,
+    name_bound_compatible INTEGER,
+    contracts_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, artifact_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_eval_artifact ON csv_schema_evaluations(artifact_uid);
+CREATE INDEX IF NOT EXISTS idx_schema_eval_lineage ON csv_schema_evaluations(lineage_key);
 """.strip()
 
 
