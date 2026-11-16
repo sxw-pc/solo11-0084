@@ -5,3 +5,10 @@ reports/
 .pytest_cache/
 .coverage
 htmlcov/
+.venv/
+venv/
+node_modules/
+*.pyc
+.benchmarks/
+.env
+dist/
