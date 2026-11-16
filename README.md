@@ -75,6 +75,9 @@ SQLite 主要表：
 - `datasets` / `versions`：发现的发布主体与发布通道、版本、来源页。
 - `artifacts`：发布件身份、声明大小/SHA-256、远端元数据、本地路径、隔离路径、状态与尝试次数。
 - `events`：`(run_id, seq)` 唯一的审计事件序列。
+- `page_evidence`：每次目录页抓取的序号、内容摘要与候选链接（复核依据）。
+- `coverage_declarations`：每个目录页的覆盖声明（候选/接受数、逐项决定、子页摘要、稳定性）。
+- `catalog_views`：严格/预览合同每次运行发布的目录视图。
 
 发布件以 `(dataset_id, version_id, filename)` 幂等 upsert。重复运行不会产生重复发布件行；已验证文件会重新计算大小与 SHA-256，删改后会重新下载。
 
@@ -97,6 +100,19 @@ SQLite 主要表：
 不跟随其他链接，不递归任意站点。`max_datasets`、`max_versions`、`max_artifacts`、`max_pages` 与通道白名单共同构成发现边界。
 
 下载器每次只发 GET/HEAD；有 `.part` 时发送 `Range: bytes=<offset>-`。只有服务端返回 206 且 `Content-Range` 起始位置匹配时才追加；服务端忽略 Range 返回 200 时从头覆盖。响应大小超过声明值或配置上限立即终止，并把超过声明大小的部分文件丢弃，避免污染后续续传。
+
+## 覆盖声明与使用合同
+
+“本次没有这个版本/发布件”只有在相关目录页于同一轮被完整、稳定地读取后才有意义。每次运行在 `coverage_declarations` 中为每个目录页（首页/数据集页/版本页）留存一条可复核的覆盖声明，绑定：父页来源 URL、读取内容摘要（SHA-256）、原始链接候选数、被接受数、每个候选的处理结果（`accepted` / `budget_skipped` / `fetch_failed` / `invalid_link` / `channel_filtered` / `duplicate`）以及已访问子页的内容摘要；`page_evidence` 表逐次留存每次抓取的页摘要与候选链接，`recheck_declaration` 可据此复核声明。
+
+遍历结束后对每个目录页做一次**确认重读**（confirm-or-reject）：摘要一致记为 `confirmed`；不一致记为 `rejected` 并发出 `page.changed` / `coverage.stability_rejected` 事件——绝不把不同时间的页面拼接成一个快照，恢复方式是新开一轮而不是采纳新内容。预算耗尽时剩余声明保持 `unverified`。声明只有 `complete`（无预算/失败/无效链接截断）且 `confirmed` 时才可用于“缺失”判定；父子页之间按同轮摘要链核对（`reconcile`），旧运行的页证据永远不会并入本轮。
+
+两个可独立选择的使用合同（`catalog_views` 表 + `releaseharbor/queries.py` 只读查询）：
+
+- **严格合同（strict）**：只有相关层级均有同一轮稳定覆盖证明的数据集才进入本次可用于“缺失”判定的目录；若本轮无任何数据集达标则本次目录不可用（`withheld`），查询回退到最近一次已发布的完整视图。
+- **预览合同（preview）**：总是发布本轮部分目录供查看/下载已验证对象，但任何未覆盖分支在 `unknowns` 中显式列出（预算、失败、无效链接、稳定性未决/被拒），频道过滤的分支列入 `filtered`，绝不据此宣告版本/发布件消失。
+
+缺失查询返回 `present` / `absent_proven` / `filtered` / `unknown`（附原因与证据页摘要）。对相同的 `max_versions=1` 输入：严格合同保留上次完整视图（`v2` 仍 `present`，`view_run_id` 指向旧运行），预览合同则回答 `unknown(budget_skipped)`。遍历中断（`failed`/`interrupted` 运行）后重跑会先把残留的运行扫为 `interrupted`（`run.recovered` 事件），再以本轮自有证据重建覆盖链。
 
 ## 安全边界
 
@@ -124,9 +140,13 @@ releaseharbor/
   httpclient.py     仅 GET/HEAD 的安全 HTTP 客户端
   fixture.py        合成门户 fixture 与内容生成
   portal_pages.py   确定性 HTML 页面
-  portal_server.py  本地 mock 门户、HEAD、Range、临时故障
+  portal_server.py  本地 mock 门户、HEAD、Range、临时故障、可变内容
   htmlparse.py      受限 link/meta 提取
+  models.py         发现结果模型类型
+  coverage.py       页证据、链接决定与覆盖声明、确认重读
   discovery.py      有界数据集/版本/发布件发现
+  catalog.py        严格/预览合同评估与视图发布
+  queries.py        缺失判定与声明复核的只读查询
   downloader.py     断点续传、重试、字节上限与 .part 恢复
   verify.py         大小/SHA-256 验收与隔离移动
   ledger.py         SQLite 幂等写入与事件序列
@@ -137,13 +157,13 @@ releaseharbor/
   console_pages.py  无外部资源、全转义 HTML
   cli.py            demo / collect / serve
   workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
+tests/              48 个 unittest 用例
 config/demo.json    固定时钟演示配置
 fixtures/portal.json 合成门户数据
 fixtures/golden/    golden 报告
 ```
 
-实现与测试合计 4340 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+实现与测试合计约 5950 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
 
 ## 合规声明
 

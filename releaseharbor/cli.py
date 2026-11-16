@@ -49,6 +49,10 @@ def _print_outcome(outcome, config) -> None:
         "verified={verified} skipped={skipped} quarantined={quarantined} "
         "failed={failed} blocked={blocked_targets}".format(**summary)
     )
+    print(
+        f"catalog: strict={outcome.views['strict']['status']} "
+        f"preview={outcome.views['preview']['status']}"
+    )
     for key in ("report_json", "report_markdown", "manifest_csv", "audit_jsonl"):
         print(f"{key}: {outcome.reports[key]}")
     print(f"database: {relative_posix(config.root, config.download.db_path)}")

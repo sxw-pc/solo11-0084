@@ -3,77 +3,44 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from typing import Callable
 from urllib.parse import urldefrag, urljoin
 
-from .errors import DiscoveryError, SecurityBoundaryError, TransportError
+from .clock import Clock
+from .coverage import (
+    ACCEPTED,
+    BUDGET_SKIPPED,
+    CHANNEL_FILTERED,
+    DUPLICATE,
+    FETCH_FAILED,
+    INVALID_LINK,
+    CoverageTracker,
+    PageEvidence,
+)
+from .errors import BudgetExceeded, DiscoveryError, SecurityBoundaryError, TransportError
 from .htmlparse import has_class, parse_portal_html
 from .httpclient import SafeHttpClient
+from .models import ArtifactRef, DiscoveredDataset, DiscoveredVersion, DiscoveryResult
 from .security import ValidatedTarget
-from .util import is_sha256, normalize_sha256, safe_filename, safe_segment, stable_id
+from .util import is_sha256, normalize_sha256, safe_filename, safe_segment
 
 EventSink = Callable[[str, str, dict], None]
 _MEDIA_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
-@dataclass(frozen=True)
-class ArtifactRef:
-    dataset_id: str
-    dataset_title: str
-    version_id: str
-    version_label: str
-    channel: str
-    released_at: str
-    filename: str
-    url: str
-    media_type: str
-    expected_size: int
-    expected_sha256: str
-
-    @property
-    def artifact_uid(self) -> str:
-        return stable_id(self.dataset_id, self.version_id, self.filename)
-
-@dataclass
-class DiscoveredVersion:
-    version_id: str
-    label: str
-    channel: str
-    released_at: str
-    source_url: str
-    artifacts: list[ArtifactRef] = field(default_factory=list)
-
-@dataclass
-class DiscoveredDataset:
-    dataset_id: str
-    title: str
-    publisher: str
-    license: str
-    source_url: str
-    versions: list[DiscoveredVersion] = field(default_factory=list)
-
-
-@dataclass
-class DiscoveryResult:
-    datasets: list[DiscoveredDataset]
-    pages_fetched: int
-    blocked: list[dict]
-    issues: list[dict]
-
-
-class _BudgetExceeded(DiscoveryError):
-    pass
 
 
 class Discovery:
     """Traverses only the fixture portal's documented link classes."""
 
-    def __init__(self, client: SafeHttpClient, config, on_event: EventSink | None = None) -> None:
+    def __init__(self, client: SafeHttpClient, config, on_event: EventSink | None = None,
+                 clock: Clock | None = None) -> None:
         self.client = client
         self.config = config
         self.on_event = on_event or (lambda code, subject, detail: None)
+        self.clock = clock or Clock()
         self.pages_fetched = 0
         self.blocked: list[dict] = []
         self.issues: list[dict] = []
+        self.tracker = CoverageTracker(self.clock, self.on_event)
 
     def _emit(self, code: str, subject: str, detail: dict) -> None:
         self.on_event(code, subject, detail)
@@ -83,14 +50,14 @@ class Discovery:
         self.issues.append(item)
         self._emit(code, subject, detail)
 
-    def _load(self, url: str) -> str:
+    def _load(self, url: str, level: str, parent_url: str | None) -> PageEvidence:
         if self.pages_fetched >= self.config.discovery.max_pages:
             self._emit(
                 "discovery.page_budget",
                 "page-budget",
                 {"max_pages": self.config.discovery.max_pages},
             )
-            raise _BudgetExceeded("portal page budget exhausted")
+            raise BudgetExceeded("portal page budget exhausted")
         with self.client.open("GET", url) as response:
             self.pages_fetched += 1
             if response.status != 200:
@@ -100,53 +67,90 @@ class Discovery:
                 raise DiscoveryError(f"unexpected status {response.status} for {url}")
             text = response.text(1_000_000)
         self._emit("page.fetched", url, {"status": 200, "bytes": len(text.encode("utf-8"))})
-        return text
+        return self.tracker.record_page(level, url, parent_url, text, self.pages_fetched)
 
-    def _link(self, base_url: str, href: str) -> ValidatedTarget | None:
+    def _link(self, base_url: str, href: str) -> tuple[ValidatedTarget | None, str]:
         if not isinstance(href, str) or not href.strip():
-            return None
+            return None, "empty href"
         candidate, _fragment = urldefrag(urljoin(base_url, href.strip()))
         try:
-            return self.client.validate(candidate)
+            return self.client.validate(candidate), ""
         except SecurityBoundaryError as exc:
             self.blocked.append({"url": candidate, "reason": str(exc)})
-            return None
+            return None, f"outside the local portal boundary: {exc}"
+
+    def _select(self, declaration, base_url: str, anchors, css_class: str, ref_attr: str,
+                limit: int, event_code: str, subject: str):
+        """Record invalid/duplicate/budget decisions; return targets to traverse."""
+        links: dict[str, ValidatedTarget] = {}
+        refs: dict[str, str] = {}
+        for anchor in anchors:
+            if not has_class(anchor.attrs, css_class):
+                continue
+            href = anchor.attrs.get("href", "")
+            ref = anchor.attrs.get(ref_attr, "")
+            target, reason = self._link(base_url, href)
+            if target is None:
+                self.tracker.decide(declaration, ref, href, INVALID_LINK, reason)
+                continue
+            if target.url in links:
+                self.tracker.decide(declaration, ref, target.url, DUPLICATE, "duplicate target")
+                continue
+            links[target.url] = target
+            refs[target.url] = ref
+        ordered = [links[key] for key in sorted(links)]
+        kept, dropped = ordered[:limit], ordered[limit:]
+        if dropped:
+            self._emit(event_code, subject, {"found": len(ordered), "kept": len(kept)})
+            for target in dropped:
+                self.tracker.decide(
+                    declaration, refs[target.url], target.url, BUDGET_SKIPPED,
+                    f"{event_code} limit {limit}",
+                )
+        return kept, refs
 
     def discover(self) -> DiscoveryResult:
         home = self.client.validate(self.config.portal.base_url).url
-        page = parse_portal_html(self._load(home))
-        links: dict[str, ValidatedTarget] = {}
-        for anchor in page.anchors:
-            if not has_class(anchor.attrs, "dataset-link"):
-                continue
-            target = self._link(home, anchor.attrs.get("href", ""))
-            if target is not None:
-                links[target.url] = target
-        ordered = [links[key] for key in sorted(links)]
-        if len(ordered) > self.config.discovery.max_datasets:
-            self._emit(
-                "discovery.dataset_limit",
-                "datasets",
-                {"found": len(ordered), "kept": self.config.discovery.max_datasets},
-            )
-            ordered = ordered[: self.config.discovery.max_datasets]
+        evidence = self._load(home, "portal", None)
+        page = parse_portal_html(evidence.text)
+        declaration = self.tracker.begin("portal", "portal", evidence)
+        kept, refs = self._select(
+            declaration, home, page.anchors, "dataset-link", "data-dataset-id",
+            self.config.discovery.max_datasets, "discovery.dataset_limit", "datasets",
+        )
         datasets: list[DiscoveredDataset] = []
         seen_ids: set[str] = set()
-        for target in ordered:
+        for target in kept:
             try:
-                dataset = self._discover_dataset(target.url)
+                dataset = self._discover_dataset(target.url, home)
             except (DiscoveryError, TransportError, SecurityBoundaryError) as exc:
                 self._issue("dataset.failed", target.url, {"reason": str(exc)})
+                self.tracker.decide(declaration, refs[target.url], target.url, FETCH_FAILED, str(exc))
                 continue
             if dataset.dataset_id in seen_ids:
+                self.tracker.decide(
+                    declaration, dataset.dataset_id, target.url, DUPLICATE, "dataset id seen"
+                )
                 continue
             seen_ids.add(dataset.dataset_id)
             datasets.append(dataset)
+            self.tracker.decide(declaration, dataset.dataset_id, target.url, ACCEPTED)
+        self.tracker.close(declaration)
         datasets.sort(key=lambda item: item.dataset_id)
-        return DiscoveryResult(datasets, self.pages_fetched, self.blocked, self.issues)
+        return DiscoveryResult(
+            datasets, self.pages_fetched, self.blocked, self.issues,
+            self.tracker.declarations, self.tracker.evidence,
+        )
 
-    def _discover_dataset(self, page_url: str) -> DiscoveredDataset:
-        parsed = parse_portal_html(self._load(page_url))
+    def verify_stability(self) -> None:
+        self.tracker.verify_stability(
+            lambda decl: self._load(decl.page_url, decl.level, decl.parent_url)
+        )
+        self.tracker.attach_children()
+
+    def _discover_dataset(self, page_url: str, home_url: str) -> DiscoveredDataset:
+        evidence = self._load(page_url, "dataset", home_url)
+        parsed = parse_portal_html(evidence.text)
         main = parsed.main_attrs
         if main.get("data-page") != "dataset":
             raise DiscoveryError("dataset page marker is missing")
@@ -163,27 +167,18 @@ class Discovery:
             license=license_name,
             source_url=page_url,
         )
-        version_links: dict[str, ValidatedTarget] = {}
-        for anchor in parsed.anchors:
-            if not has_class(anchor.attrs, "version-link"):
-                continue
-            target = self._link(page_url, anchor.attrs.get("href", ""))
-            if target is not None:
-                version_links[target.url] = target
-        ordered = [version_links[key] for key in sorted(version_links)]
-        if len(ordered) > self.config.discovery.max_versions:
-            self._emit(
-                "discovery.version_limit",
-                dataset.dataset_id,
-                {"found": len(ordered), "kept": self.config.discovery.max_versions},
-            )
-            ordered = ordered[: self.config.discovery.max_versions]
+        declaration = self.tracker.begin("dataset", dataset_id, evidence)
+        kept, refs = self._select(
+            declaration, page_url, parsed.anchors, "version-link", "data-version-id",
+            self.config.discovery.max_versions, "discovery.version_limit", dataset_id,
+        )
         seen_versions: set[str] = set()
-        for target in ordered:
+        for target in kept:
             try:
                 version = self._discover_version(dataset, target.url)
             except (DiscoveryError, TransportError, SecurityBoundaryError) as exc:
                 self._issue("version.failed", target.url, {"reason": str(exc)})
+                self.tracker.decide(declaration, refs[target.url], target.url, FETCH_FAILED, str(exc))
                 continue
             if version.channel not in self.config.discovery.channels:
                 self._emit(
@@ -191,18 +186,28 @@ class Discovery:
                     version.version_id,
                     {"channel": version.channel},
                 )
+                self.tracker.decide(
+                    declaration, version.version_id, target.url, CHANNEL_FILTERED,
+                    f"channel {version.channel}",
+                )
                 continue
             if version.version_id in seen_versions:
+                self.tracker.decide(
+                    declaration, version.version_id, target.url, DUPLICATE, "version id seen"
+                )
                 continue
             seen_versions.add(version.version_id)
             dataset.versions.append(version)
+            self.tracker.decide(declaration, version.version_id, target.url, ACCEPTED)
         dataset.versions.sort(key=lambda item: item.version_id)
+        self.tracker.close(declaration)
         return dataset
 
     def _discover_version(
         self, dataset: DiscoveredDataset, page_url: str
     ) -> DiscoveredVersion:
-        parsed = parse_portal_html(self._load(page_url))
+        evidence = self._load(page_url, "version", dataset.source_url)
+        parsed = parse_portal_html(evidence.text)
         main = parsed.main_attrs
         if main.get("data-page") != "version":
             raise DiscoveryError("version page marker is missing")
@@ -215,28 +220,20 @@ class Discovery:
         if not label or not channel or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", released):
             raise DiscoveryError("version metadata is incomplete")
         version = DiscoveredVersion(version_id, label, channel, released, page_url)
-        artifact_links: dict[str, ValidatedTarget] = {}
-        for anchor in parsed.anchors:
-            if not has_class(anchor.attrs, "artifact-link"):
-                continue
-            target = self._link(page_url, anchor.attrs.get("href", ""))
-            if target is not None:
-                artifact_links[target.url] = target
-        ordered = [artifact_links[key] for key in sorted(artifact_links)]
-        if len(ordered) > self.config.discovery.max_artifacts:
-            self._emit(
-                "discovery.artifact_limit",
-                version_id,
-                {"found": len(ordered), "kept": self.config.discovery.max_artifacts},
-            )
-            ordered = ordered[: self.config.discovery.max_artifacts]
+        declaration = self.tracker.begin("version", version_id, evidence)
+        kept, refs = self._select(
+            declaration, page_url, parsed.anchors, "artifact-link", "data-filename",
+            self.config.discovery.max_artifacts, "discovery.artifact_limit", version_id,
+        )
         seen_names: set[str] = set()
-        for target in ordered:
-            attributes = self._artifact_attrs(parsed, target.url, page_url)
+        for target in kept:
+            attributes, error = self._artifact_attrs(parsed, target.url, page_url)
             if attributes is None:
+                self.tracker.decide(declaration, refs[target.url], target.url, INVALID_LINK, error)
                 continue
             filename = attributes["filename"]
             if filename in seen_names:
+                self.tracker.decide(declaration, filename, target.url, DUPLICATE, "filename seen")
                 continue
             seen_names.add(filename)
             version.artifacts.append(
@@ -254,12 +251,14 @@ class Discovery:
                     expected_sha256=attributes["sha256"],
                 )
             )
+            self.tracker.decide(declaration, filename, target.url, ACCEPTED)
         version.artifacts.sort(key=lambda item: item.filename)
+        self.tracker.close(declaration)
         if not version.artifacts:
             raise DiscoveryError("version has no valid artifact metadata")
         return version
 
-    def _artifact_attrs(self, parsed, target_url: str, page_url: str) -> dict | None:
+    def _artifact_attrs(self, parsed, target_url: str, page_url: str) -> tuple[dict | None, str]:
         for anchor in parsed.anchors:
             if not has_class(anchor.attrs, "artifact-link"):
                 continue
@@ -271,28 +270,28 @@ class Discovery:
                 name = safe_filename(name_raw)
             except SecurityBoundaryError as exc:
                 self._issue("artifact.metadata_invalid", name_raw, {"reason": str(exc)})
-                return None
+                return None, str(exc)
             sha = anchor.attrs.get("data-sha256", "")
             if not is_sha256(sha):
                 self._issue("artifact.metadata_invalid", name, {"reason": "invalid sha256"})
-                return None
+                return None, "invalid sha256"
             size_raw = anchor.attrs.get("data-size", "")
             try:
                 size = int(size_raw)
             except ValueError:
                 self._issue("artifact.metadata_invalid", name, {"reason": "invalid size"})
-                return None
+                return None, "invalid size"
             if size < 0 or size > 52_428_800:
                 self._issue("artifact.metadata_invalid", name, {"reason": "size out of range"})
-                return None
+                return None, "size out of range"
             media_type = anchor.attrs.get("data-media-type", "")
             if not _MEDIA_TYPE.fullmatch(media_type):
                 self._issue("artifact.metadata_invalid", name, {"reason": "invalid media type"})
-                return None
+                return None, "invalid media type"
             return {
                 "filename": name,
                 "sha256": normalize_sha256(sha),
                 "size": size,
                 "media_type": media_type,
-            }
-        return None
+            }, ""
+        return None, "artifact link metadata not found"

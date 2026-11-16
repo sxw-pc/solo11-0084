@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .catalog import publish_views
 from .clock import Clock
 from .collector import ArtifactProcessor
 from .db import connect
@@ -24,6 +25,7 @@ class RunOutcome:
     summary: dict
     reports: dict[str, str]
     pages_fetched: int
+    views: dict
 
 
 def _persist_manifest(ledger: Ledger, run_id: str, result: DiscoveryResult) -> int:
@@ -45,6 +47,7 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
     ledger = Ledger(connection, clock)
     preferred = f"run-{clock.compact()}-{config.fingerprint[:8]}"
     run_id = ledger.allocate_run_id(preferred)
+    interrupted = ledger.mark_interrupted_runs()
     ledger.start_run(run_id, config.fingerprint)
     try:
         ledger.record_event(
@@ -57,9 +60,27 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
                 "clock_mode": config.clock_mode,
             },
         )
+        if interrupted:
+            ledger.record_event(
+                run_id,
+                "run.recovered",
+                run_id,
+                {"interrupted_runs": interrupted},
+                "warning",
+            )
 
         def audit(code: str, subject: str, detail: dict) -> None:
-            level = "warning" if code in {"target.blocked", "discovery.channel_filtered"} else "info"
+            level = (
+                "warning"
+                if code
+                in {
+                    "target.blocked",
+                    "discovery.channel_filtered",
+                    "page.changed",
+                    "coverage.stability_rejected",
+                }
+                else "info"
+            )
             ledger.record_event(run_id, code, subject, detail, level)
 
         def blocked(code: str, subject: str, detail: dict) -> None:
@@ -69,8 +90,13 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
         client = SafeHttpClient(
             policy, timeout=config.request_timeout, on_blocked=blocked
         )
-        discovery = Discovery(client, config, on_event=audit)
+        discovery = Discovery(client, config, on_event=audit, clock=clock)
         result = discovery.discover()
+        discovery.verify_stability()
+        for evidence in result.evidence:
+            ledger.record_page_evidence(run_id, evidence)
+        for declaration in result.declarations:
+            ledger.record_declaration(run_id, declaration)
         artifact_count = _persist_manifest(ledger, run_id, result)
         audit(
             "discovery.completed",
@@ -79,7 +105,7 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
                 "datasets": len(result.datasets),
                 "versions": sum(len(item.versions) for item in result.datasets),
                 "artifacts": artifact_count,
-                "pages_fetched": result.pages_fetched,
+                "pages_fetched": discovery.pages_fetched,
                 "blocked": len(result.blocked),
                 "issues": len(result.issues),
             },
@@ -116,6 +142,19 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
                         except Exception:
                             pass
 
+        views = publish_views(connection, ledger, run_id)
+        audit(
+            "coverage.evaluated",
+            "portal",
+            {
+                "declarations": len(result.declarations),
+                "confirmed": sum(
+                    1 for item in result.declarations if item.stability == "confirmed"
+                ),
+                "strict": views["strict"]["status"],
+                "preview": views["preview"]["status"],
+            },
+        )
         counts = collect_counts(connection, run_id)
         status = (
             "partial"
@@ -126,7 +165,7 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
         summary = collect_counts(connection, run_id)
         ledger.finish_run(run_id, status, summary)
         paths = write_reports(connection, config, run_id)
-        return RunOutcome(run_id, status, summary, paths, result.pages_fetched)
+        return RunOutcome(run_id, status, summary, paths, discovery.pages_fetched, views)
     except Exception as exc:
         detail = {"error": f"{type(exc).__name__}: {exc}"}
         try:

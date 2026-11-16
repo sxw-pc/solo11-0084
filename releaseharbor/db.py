@@ -85,9 +85,48 @@ CREATE TABLE IF NOT EXISTS events (
     detail_json TEXT NOT NULL,
     UNIQUE(run_id, seq)
 );
+CREATE TABLE IF NOT EXISTS page_evidence (
+    run_id TEXT NOT NULL,
+    page_url TEXT NOT NULL,
+    level TEXT NOT NULL,
+    parent_url TEXT,
+    fetch_seq INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    links_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (run_id, page_url, fetch_seq)
+);
+CREATE TABLE IF NOT EXISTS coverage_declarations (
+    run_id TEXT NOT NULL,
+    level TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    page_url TEXT NOT NULL,
+    parent_url TEXT,
+    content_digest TEXT NOT NULL,
+    first_fetch_seq INTEGER NOT NULL,
+    verified_fetch_seq INTEGER,
+    fetched_at TEXT NOT NULL,
+    stability TEXT NOT NULL,
+    complete INTEGER NOT NULL,
+    candidates INTEGER NOT NULL,
+    accepted INTEGER NOT NULL,
+    decisions_json TEXT NOT NULL,
+    children_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, page_url)
+);
+CREATE TABLE IF NOT EXISTS catalog_views (
+    contract TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    view_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (contract, run_id)
+);
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_versions_dataset ON versions(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_run ON page_evidence(run_id, page_url);
+CREATE INDEX IF NOT EXISTS idx_declarations_run ON coverage_declarations(run_id, level);
 """.strip()
 
 

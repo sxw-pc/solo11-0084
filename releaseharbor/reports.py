@@ -7,6 +7,7 @@ import io
 import json
 import sqlite3
 
+from .catalog import evaluate_views, load_declarations
 from .util import atomic_write_text, ensure_directory, relative_posix
 
 
@@ -48,6 +49,13 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
     ).fetchall()
     statuses = {row["status"]: row["amount"] for row in rows}
     events = _event_rows(connection, run_id)
+    coverage = connection.execute(
+        "SELECT COUNT(*) AS total, "
+        "COALESCE(SUM(CASE WHEN stability = 'confirmed' THEN 1 ELSE 0 END), 0) AS confirmed, "
+        "COALESCE(SUM(complete), 0) AS complete "
+        "FROM coverage_declarations WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
     return {
         "datasets": datasets,
         "versions": versions,
@@ -61,6 +69,11 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
         "blocked_targets": sum(1 for item in events if item["code"] == "target.blocked"),
         "warnings": sum(1 for item in events if item["level"] == "warning"),
         "events": len(events),
+        "coverage": {
+            "declarations": coverage["total"],
+            "confirmed": coverage["confirmed"],
+            "complete": coverage["complete"],
+        },
     }
 
 
@@ -156,6 +169,8 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
         },
         "summary": summary,
         "datasets": dataset_items,
+        "coverage": {"declarations": load_declarations(connection, run_id)},
+        "catalog": evaluate_views(connection, run_id),
         "events": events,
     }
 
@@ -163,6 +178,10 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
 def _markdown(report: dict) -> str:
     run = report["run"]
     summary = report["summary"]
+    coverage = summary.get("coverage", {"declarations": 0, "confirmed": 0, "complete": 0})
+    catalog = report.get("catalog", {})
+    strict = catalog.get("strict", {})
+    preview = catalog.get("preview", {})
     lines = [
         "# ReleaseHarbor release intake report",
         "",
@@ -175,6 +194,10 @@ def _markdown(report: dict) -> str:
         f"- Verified / skipped / quarantined / failed: {summary['verified']} / "
         f"{summary['skipped']} / {summary['quarantined']} / {summary['failed']}",
         f"- Blocked targets: {summary['blocked_targets']}",
+        f"- Coverage declarations (confirmed / complete / total): "
+        f"{coverage['confirmed']} / {coverage['complete']} / {coverage['declarations']}",
+        f"- Catalog: strict={strict.get('status', 'n/a')} "
+        f"preview={preview.get('status', 'n/a')}",
         "",
         "> All names, payloads, checksums, and URLs in this report are synthetic fixtures.",
         "",

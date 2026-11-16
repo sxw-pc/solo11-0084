@@ -7,6 +7,8 @@
 - Datasets / versions / artifacts: 3 / 5 / 9
 - Verified / skipped / quarantined / failed: 8 / 0 / 1 / 0
 - Blocked targets: 0
+- Coverage declarations (confirmed / complete / total): 10 / 10 / 10
+- Catalog: strict=published preview=published
 
 > All names, payloads, checksums, and URLs in this report are synthetic fixtures.
 

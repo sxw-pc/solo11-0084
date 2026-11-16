@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from .coverage import CoverageDeclaration, PageEvidence
 from .discovery import ArtifactRef, DiscoveredDataset, DiscoveredVersion
 from .util import canonical_json, stable_id
 
@@ -197,3 +198,66 @@ class Ledger:
                 }
             )
         return result
+
+    def mark_interrupted_runs(self) -> list[str]:
+        """Sweep runs that never finished (crash cut point) to 'interrupted'."""
+        rows = self.connection.execute(
+            "SELECT run_id FROM runs WHERE status = 'running' ORDER BY started_at"
+        ).fetchall()
+        self.connection.execute(
+            "UPDATE runs SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
+            (self.clock.now(),),
+        )
+        self.connection.commit()
+        return [row["run_id"] for row in rows]
+
+    def record_page_evidence(self, run_id: str, evidence: PageEvidence) -> None:
+        self.connection.execute(
+            "INSERT INTO page_evidence(run_id, page_url, level, parent_url, fetch_seq, "
+            "fetched_at, content_digest, links_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                evidence.page_url,
+                evidence.level,
+                evidence.parent_url,
+                evidence.fetch_seq,
+                evidence.fetched_at,
+                evidence.content_digest,
+                canonical_json(evidence.links),
+            ),
+        )
+        self.connection.commit()
+
+    def record_declaration(self, run_id: str, declaration: CoverageDeclaration) -> None:
+        self.connection.execute(
+            "INSERT INTO coverage_declarations(run_id, level, subject, page_url, parent_url, "
+            "content_digest, first_fetch_seq, verified_fetch_seq, fetched_at, stability, "
+            "complete, candidates, accepted, decisions_json, children_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                declaration.level,
+                declaration.subject,
+                declaration.page_url,
+                declaration.parent_url,
+                declaration.content_digest,
+                declaration.first_fetch_seq,
+                declaration.verified_fetch_seq,
+                declaration.fetched_at,
+                declaration.stability,
+                1 if declaration.complete else 0,
+                declaration.candidates,
+                declaration.accepted,
+                canonical_json([d.as_dict() for d in declaration.decisions]),
+                canonical_json(declaration.children),
+            ),
+        )
+        self.connection.commit()
+
+    def record_catalog_view(self, contract: str, run_id: str, status: str, view: dict) -> None:
+        self.connection.execute(
+            "INSERT OR REPLACE INTO catalog_views(contract, run_id, status, view_json, "
+            "created_at) VALUES (?, ?, ?, ?, ?)",
+            (contract, run_id, status, canonical_json(view), self.clock.now()),
+        )
+        self.connection.commit()

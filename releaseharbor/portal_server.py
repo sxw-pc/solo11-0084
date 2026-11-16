@@ -257,6 +257,16 @@ class PortalServer:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"http://{host}:{self.port}"
 
+    def replace_fixture(self, fixture: PortalFixture) -> None:
+        """Swap the served fixture, simulating a portal that changes over time."""
+        self._server.fixture = fixture
+        self._server.transient_budget = {
+            (dataset.dataset_id, version.version_id, artifact.name): artifact.transient_failures
+            for dataset in fixture.datasets
+            for version in dataset.versions
+            for artifact in version.artifacts
+        }
+
     def start(self) -> "PortalServer":
         if self._thread is not None:
             return self

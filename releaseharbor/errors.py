@@ -25,6 +25,10 @@ class DiscoveryError(ReleaseHarborError):
     """A portal page could not be interpreted safely."""
 
 
+class BudgetExceeded(DiscoveryError):
+    """The configured discovery budget stopped further traversal."""
+
+
 class DownloadError(ReleaseHarborError):
     """A transfer failed for a non-retryable protocol reason."""
 
