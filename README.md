@@ -84,7 +84,24 @@ SQLite 主要表：
 - `skipped`：上次状态为已验证/已跳过，本地文件复验通过，本次不重复下载。
 - `checksum_mismatch` / `size_mismatch`：验收失败，文件进入隔离目录，不写入发布件目录。
 - `failed`：远端元数据、传输或协议失败；可恢复的传输失败会按配置重试，`.part` 文件保留以支持下次 Range 续传。
+- `capacity_blocked`：容量合同拒绝准入（区别于源文件校验失败）；旧 verified 字节原地保留、可继续复核。
+- `retired`：空间优先合同下旧件已登记淘汰、字节已删除，新件尚未通过验收；不可用窗口仍未关闭。
 - `pending` / `downloading`：台账中间状态；正常完成后不应残留。
+
+## 工作区容量合同（可选）
+
+配置顶层可选 `capacity` 节即启用离线合成容量合同（不读取真实磁盘剩余空间）：
+
+```json
+"capacity": {"workspace_bytes": 150, "contract": "continuous"}
+```
+
+- 容量账本按 `artifact_dir` + `quarantine_dir`（含 `.part`）的实际占用字节建模：旧目标件、隔离件、残留 `.part` 都计入占用；旧 verified 在新件通过验收前不算空闲；`.part` 已占字节不重复计费、也不算已发布。
+- 执行前先为全部待更新件搜索满足峰值容量的完整执行顺序（子集动态规划精确求解，非发现顺序、非最小文件贪心）。无解时发出 `capacity.rejected` 事件，给出当前占用、容量下界（`current_occupancy` / `final_occupancy` / `individual_peak` / `exact_peak`）与被阻塞更新集合，原 verified 保持可复核。
+- `continuous`（连续可用合同）：旧件保留到新件验收，峰值 = 占用 + 新件尚需暂存字节。
+- `space_first`（空间优先合同）：允许先登记旧件摘要与取回来源、标记 `retired` 并删除旧字节释放容量再下载；`capacity.retired` → `capacity.restored` 之间为报告的不可用窗口；失败时保持 `retired` + `capacity.restore_failed` 的可复核状态，不虚称旧件可用。
+- 每次写入以下载器 `part_limit` 守住字节上限；HEAD/GET 大小变化、Range 被忽略或下载失败都会触发 `capacity.replan` 重新计算剩余容量，不沿用旧计划。
+- 计划/执行之间、下载中途、旧件淘汰后、替换前四个切点中断后，重跑用实际文件大小/摘要与事件状态重建账本：残留 `.part` 与上次隔离件仍计占用，已淘汰但台账仍为 verified 的对象会被降级为 `retired`，不会算成免费容量或本次成功。清理只发生在配置的生成输出目录内。
 
 ## 发现与下载策略
 
@@ -127,9 +144,11 @@ releaseharbor/
   portal_server.py  本地 mock 门户、HEAD、Range、临时故障
   htmlparse.py      受限 link/meta 提取
   discovery.py      有界数据集/版本/发布件发现
-  downloader.py     断点续传、重试、字节上限与 .part 恢复
+  downloader.py     断点续传、重试、字节上限、.part 恢复与容量写入闸门
   verify.py         大小/SHA-256 验收与隔离移动
   ledger.py         SQLite 幂等写入与事件序列
+  capacity.py       容量账本、两合同准入与执行顺序规划
+  admission.py      容量合同执行：重建对账、准入守卫、回退重规划
   collector.py      单发布件元数据 -> 下载 -> 验收流程
   pipeline.py       单次运行编排与 fatal 收尾
   reports.py        JSON/Markdown/CSV/JSONL 输出
@@ -137,13 +156,13 @@ releaseharbor/
   console_pages.py  无外部资源、全转义 HTML
   cli.py            demo / collect / serve
   workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
+tests/              53 个 unittest 用例
 config/demo.json    固定时钟演示配置
 fixtures/portal.json 合成门户数据
 fixtures/golden/    golden 报告
 ```
 
-实现与测试合计 4340 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+实现与测试合计 5459 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 410 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
 
 ## 合规声明
 

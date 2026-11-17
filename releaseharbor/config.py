@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .capacity import CapacitySettings, parse_capacity
 from .clock import format_utc
 from .errors import ConfigError, SecurityBoundaryError
 from .security import UrlPolicy, require_loopback_bind
@@ -64,6 +65,7 @@ class AppConfig:
     clock_fixed: str
     request_timeout: float
     reset_on_start: bool
+    capacity: CapacitySettings | None
 
     def ensure_output_dirs(self) -> None:
         for path in (
@@ -164,7 +166,7 @@ def load_config(path_value: str | Path) -> AppConfig:
         raw,
         "configuration",
         {"schema_version", "root", "portal", "discovery", "download", "security", "clock"},
-        {"console", "demo"},
+        {"console", "demo", "capacity"},
     )
     if raw["schema_version"] != 1:
         raise ConfigError("schema_version must be 1")
@@ -276,6 +278,15 @@ def load_config(path_value: str | Path) -> AppConfig:
     demo_raw = _object(raw.get("demo", {"reset_on_start": False}), "demo")
     _keys(demo_raw, "demo", {"reset_on_start"})
     reset = _boolean(demo_raw["reset_on_start"], "demo.reset_on_start")
+    capacity = parse_capacity(raw.get("capacity"))
+    if capacity is not None:
+        artifact_root = download.artifact_dir.resolve()
+        quarantine_root = download.quarantine_dir.resolve()
+        nested = quarantine_root.is_relative_to(artifact_root) or artifact_root.is_relative_to(
+            quarantine_root
+        )
+        if artifact_root == quarantine_root or nested:
+            raise ConfigError("capacity workspace roots must be disjoint directories")
     _validate_layout(path, fixture, download)
 
     return AppConfig(
@@ -297,4 +308,5 @@ def load_config(path_value: str | Path) -> AppConfig:
         clock_fixed=fixed,
         request_timeout=float(timeout_raw),
         reset_on_start=reset,
+        capacity=capacity,
     )

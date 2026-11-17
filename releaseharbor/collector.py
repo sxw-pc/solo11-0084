@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .discovery import ArtifactRef
 from .downloader import Downloader, artifact_destination
-from .errors import IntegrityError, SecurityBoundaryError, TransportError
+from .errors import CapacityAdmissionError, IntegrityError, SecurityBoundaryError, TransportError
 from .httpclient import SafeHttpClient
 from .ledger import Ledger
 from .util import relative_posix
@@ -51,7 +51,21 @@ class ArtifactProcessor:
         payload.update({"code": code, "detail": detail})
         self._event("artifact.failed", ref, payload, "warning")
 
-    def process(self, ref: ArtifactRef) -> str:
+    def _capacity_blocked(self, ref: ArtifactRef, code: str, detail: str) -> str:
+        """Record a capacity rejection; never confused with source validation."""
+        self.ledger.update_artifact(
+            ref.artifact_uid,
+            self.run_id,
+            status="capacity_blocked",
+            error_code=code,
+            error_detail=detail,
+        )
+        payload = self._base_detail(ref)
+        payload.update({"code": code, "detail": detail})
+        self._event("capacity.rejected", ref, payload, "warning")
+        return "capacity_blocked"
+
+    def process(self, ref: ArtifactRef, capacity=None) -> str:
         row = self.ledger.upsert_artifact(self.run_id, ref)
         maximum = self.config.download.max_artifact_bytes
         if ref.expected_size > maximum:
@@ -142,6 +156,15 @@ class ArtifactProcessor:
                 "warning",
             )
 
+        part_limit = None
+        if capacity is not None:
+            try:
+                part_limit = capacity.admit_download(ref)
+            except CapacityAdmissionError as exc:
+                if exc.replan:
+                    return "deferred"
+                return self._capacity_blocked(ref, exc.code, exc.detail)
+
         self.ledger.update_artifact(
             ref.artifact_uid,
             self.run_id,
@@ -151,8 +174,12 @@ class ArtifactProcessor:
             quarantine_path=None,
         )
         self._event("artifact.download_start", ref, self._base_detail(ref))
-        result = self.downloader.download(ref)
+        result = self.downloader.download(ref, part_limit=part_limit)
         if not result.accepted or result.path is None:
+            code = result.error_code or "download_failed"
+            detail = result.error_detail or "download did not complete"
+            if code == "capacity_exceeded":
+                return self._capacity_blocked(ref, code, detail)
             self.ledger.update_artifact(
                 ref.artifact_uid,
                 self.run_id,

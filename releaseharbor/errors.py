@@ -36,3 +36,13 @@ class IntegrityError(ReleaseHarborError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+class CapacityAdmissionError(ReleaseHarborError):
+    """The workspace capacity contract cannot admit an update step."""
+
+    def __init__(self, code: str, detail: str, *, replan: bool = False) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.replan = replan

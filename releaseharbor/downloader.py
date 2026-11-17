@@ -48,6 +48,10 @@ class _Retryable(Exception):
         self.detail = detail
 
 
+class _CapacityExceeded(Exception):
+    """The workspace capacity budget would be exceeded by this transfer."""
+
+
 class Downloader:
     def __init__(
         self,
@@ -70,7 +74,7 @@ class Downloader:
         except OSError:
             return 0
 
-    def download(self, ref: ArtifactRef) -> DownloadResult:
+    def download(self, ref: ArtifactRef, part_limit: int | None = None) -> DownloadResult:
         target = artifact_destination(
             self.config.download.artifact_dir,
             ref.dataset_id,
@@ -87,6 +91,11 @@ class Downloader:
                 f"declared size {expected} exceeds limit {maximum}",
             )
         offset = self._size_of(partial)
+        if part_limit is not None and offset > part_limit:
+            return DownloadResult(
+                False, None, partial, 0, 0, 0, "capacity_exceeded",
+                f"partial size {offset} exceeds workspace budget {part_limit}",
+            )
         if offset > expected:
             partial.unlink(missing_ok=True)
             offset = 0
@@ -107,9 +116,17 @@ class Downloader:
                 offset = 0
             headers = {"Range": f"bytes={offset}-"} if offset > 0 else None
             try:
-                result = self._attempt(ref, target, partial, offset, expected, maximum, headers, attempts)
+                result = self._attempt(
+                    ref, target, partial, offset, expected, maximum, headers, attempts,
+                    part_limit,
+                )
                 if result is not None:
                     return result
+            except _CapacityExceeded as exc:
+                return DownloadResult(
+                    False, None, partial, attempts, self._size_of(partial), resumed_from,
+                    "capacity_exceeded", str(exc),
+                )
             except _Retryable as exc:
                 last_code, last_detail = exc.code, exc.detail
             except DownloadError as exc:
@@ -139,6 +156,7 @@ class Downloader:
         maximum: int,
         headers: dict[str, str] | None,
         attempts: int,
+        part_limit: int | None = None,
     ) -> DownloadResult | None:
         with self.client.open("GET", ref.url, headers=headers) as response:
             if response.status == 416:
@@ -167,11 +185,19 @@ class Downloader:
             if length is not None and offset + length > maximum:
                 partial.unlink(missing_ok=True)
                 raise DownloadError("artifact exceeds the configured byte limit")
+            if part_limit is not None and length is not None and offset + length > part_limit:
+                raise _CapacityExceeded(
+                    f"transfer would exceed workspace budget {part_limit}"
+                )
             mode = "ab" if offset > 0 else "wb"
             written = offset
             with partial.open(mode) as handle:
                 for chunk in response.iter_chunks(self.config.download.chunk_size):
                     written += len(chunk)
+                    if part_limit is not None and written > part_limit:
+                        raise _CapacityExceeded(
+                            f"workspace budget {part_limit} exceeded during write"
+                        )
                     if written > maximum or written > expected:
                         handle.close()
                         partial.unlink(missing_ok=True)

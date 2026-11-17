@@ -48,7 +48,7 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
     ).fetchall()
     statuses = {row["status"]: row["amount"] for row in rows}
     events = _event_rows(connection, run_id)
-    return {
+    summary = {
         "datasets": datasets,
         "versions": versions,
         "artifacts": sum(statuses.values()),
@@ -62,6 +62,10 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
         "warnings": sum(1 for item in events if item["level"] == "warning"),
         "events": len(events),
     }
+    for extra in ("retired", "capacity_blocked"):
+        if statuses.get(extra):
+            summary[extra] = statuses[extra]
+    return summary
 
 
 def _artifact_dict(row: sqlite3.Row) -> dict:

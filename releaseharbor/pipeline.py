@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .admission import CapacityRunner
 from .clock import Clock
 from .collector import ArtifactProcessor
 from .db import connect
@@ -58,7 +59,11 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
             },
         )
 
+        divergence: list[str] = []
+
         def audit(code: str, subject: str, detail: dict) -> None:
+            if code in {"download.range_ignored", "download.partial_discarded"}:
+                divergence.append(code)
             level = "warning" if code in {"target.blocked", "discovery.channel_filtered"} else "info"
             ledger.record_event(run_id, code, subject, detail, level)
 
@@ -89,37 +94,46 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
 
         downloader = Downloader(config, client, clock, on_event=audit)
         processor = ArtifactProcessor(config, client, ledger, downloader, run_id)
-        for dataset in result.datasets:
-            for version in dataset.versions:
-                for ref in version.artifacts:
+        refs = [
+            ref
+            for dataset in result.datasets
+            for version in dataset.versions
+            for ref in version.artifacts
+        ]
+        if config.capacity is not None:
+            runner = CapacityRunner(config, connection, ledger, processor, run_id, divergence)
+            runner.execute(refs)
+        else:
+            for ref in refs:
+                try:
+                    processor.process(ref)
+                except Exception as exc:  # keep one bad artifact from aborting the run
+                    detail = {
+                        "dataset": ref.dataset_id,
+                        "version": ref.version_id,
+                        "filename": ref.filename,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    ledger.record_event(
+                        run_id, "artifact.failed", ref.artifact_uid, detail, "error"
+                    )
                     try:
-                        processor.process(ref)
-                    except Exception as exc:  # keep one bad artifact from aborting the run
-                        detail = {
-                            "dataset": ref.dataset_id,
-                            "version": ref.version_id,
-                            "filename": ref.filename,
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                        ledger.record_event(
-                            run_id, "artifact.failed", ref.artifact_uid, detail, "error"
+                        ledger.update_artifact(
+                            ref.artifact_uid,
+                            run_id,
+                            status="failed",
+                            local_path=None,
+                            error_code="internal_error",
+                            error_detail=str(exc),
                         )
-                        try:
-                            ledger.update_artifact(
-                                ref.artifact_uid,
-                                run_id,
-                                status="failed",
-                                local_path=None,
-                                error_code="internal_error",
-                                error_detail=str(exc),
-                            )
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
 
         counts = collect_counts(connection, run_id)
+        blocked = counts.get("capacity_blocked", 0) + counts.get("retired", 0)
         status = (
             "partial"
-            if counts["failed"] or counts["quarantined"] or counts["pending"]
+            if counts["failed"] or counts["quarantined"] or counts["pending"] or blocked
             else "success"
         )
         ledger.record_event(run_id, "run.finished", run_id, {"status": status})
