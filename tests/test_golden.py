@@ -20,6 +20,9 @@ class GoldenTests(unittest.TestCase):
             (root / "fixtures").mkdir()
             shutil.copyfile(ROOT / "config/demo.json", root / "config/demo.json")
             shutil.copyfile(ROOT / "fixtures/portal.json", root / "fixtures/portal.json")
+            shutil.copyfile(
+                ROOT / "fixtures/combo-rules.json", root / "fixtures/combo-rules.json"
+            )
             config = load_config(root / "config/demo.json")
             fixture = load_portal_fixture(config.portal.fixture)
             portal = PortalServer(fixture, config.portal.bind_host, 18765)

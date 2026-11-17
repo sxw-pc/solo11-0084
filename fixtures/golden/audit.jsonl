@@ -1,4 +1,4 @@
-{"code": "run.started", "detail": {"clock_mode": "fixed", "config_fingerprint": "cb1b0e2c018676d0", "portal": "http://127.0.0.1:18765"}, "level": "info", "seq": 1, "subject": "run-20260115T120000Z-cb1b0e2c", "ts": "2026-01-15T12:00:00Z"}
+{"code": "run.started", "detail": {"clock_mode": "fixed", "config_fingerprint": "2db7708879676006", "portal": "http://127.0.0.1:18765"}, "level": "info", "seq": 1, "subject": "run-20260115T120000Z-2db77088", "ts": "2026-01-15T12:00:00Z"}
 {"code": "page.fetched", "detail": {"bytes": 2254, "status": 200}, "level": "info", "seq": 2, "subject": "http://127.0.0.1:18765/", "ts": "2026-01-15T12:00:00Z"}
 {"code": "page.fetched", "detail": {"bytes": 1870, "status": 200}, "level": "info", "seq": 3, "subject": "http://127.0.0.1:18765/datasets/air-quality", "ts": "2026-01-15T12:00:00Z"}
 {"code": "page.fetched", "detail": {"bytes": 2790, "status": 200}, "level": "info", "seq": 4, "subject": "http://127.0.0.1:18765/datasets/air-quality/versions/2025-01", "ts": "2026-01-15T12:00:00Z"}
@@ -39,4 +39,4 @@
 {"code": "artifact.metadata", "detail": {"accept_ranges": "bytes", "dataset": "transit-counts", "filename": "station_labels.csv", "media_type": "text/csv", "remote_size": 85, "status": 200, "version": "v3-labels"}, "level": "info", "seq": 39, "subject": "0efb83c90222a2951139ae19", "ts": "2026-01-15T12:00:00Z"}
 {"code": "artifact.download_start", "detail": {"dataset": "transit-counts", "filename": "station_labels.csv", "version": "v3-labels"}, "level": "info", "seq": 40, "subject": "0efb83c90222a2951139ae19", "ts": "2026-01-15T12:00:00Z"}
 {"code": "artifact.verified", "detail": {"attempts": 1, "dataset": "transit-counts", "filename": "station_labels.csv", "local_path": "var/artifacts/transit-counts/v3-labels/station_labels.csv", "resumed_from": 0, "sha256": "f91fdfcae07925a71e1b79ad31a2192755e48068b0aa581adabe5bcf111bfd37", "size": 85, "version": "v3-labels"}, "level": "info", "seq": 41, "subject": "0efb83c90222a2951139ae19", "ts": "2026-01-15T12:00:00Z"}
-{"code": "run.finished", "detail": {"status": "partial"}, "level": "info", "seq": 42, "subject": "run-20260115T120000Z-cb1b0e2c", "ts": "2026-01-15T12:00:00Z"}
+{"code": "run.finished", "detail": {"status": "partial"}, "level": "info", "seq": 42, "subject": "run-20260115T120000Z-2db77088", "ts": "2026-01-15T12:00:00Z"}

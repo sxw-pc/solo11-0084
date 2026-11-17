@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "rule_table_version": "combo-rules-2026.1",
+  "description": "Synthetic fictional compliance rule table for offline combination adjudication. Every label, template, and obligation here is invented for testing; it never interprets real licenses such as CC.",
+  "fictional_notice": "FICTIONAL RULES ONLY - no real license interpretation and no legal conclusion for any real use.",
+  "max_branches_per_label": 8,
+  "templates": [
+    {
+      "id": "AT-X-RESTRICTED",
+      "slot": "attribution-x-restricted",
+      "text": "Source X fictional internal attribution: {publisher} / {dataset_id} / {version_id}"
+    },
+    {
+      "id": "AT-X-PUB",
+      "slot": "attribution-x",
+      "exclusive_group": "attribution-pub",
+      "text": "Source X fictional attribution: {publisher} / {dataset_id} / {version_id}"
+    },
+    {
+      "id": "AT-Y-PUB",
+      "slot": "attribution-y",
+      "exclusive_group": "attribution-pub",
+      "text": "Source Y fictional attribution: {publisher} / {dataset_id} / {version_id}"
+    },
+    {
+      "id": "AT-Z-A",
+      "slot": "attribution-z-a",
+      "exclusive_group": "attribution-z",
+      "text": "Source Z fictional attribution form A: {publisher} / {dataset_id}"
+    },
+    {
+      "id": "AT-Z-B",
+      "slot": "attribution-z-b",
+      "exclusive_group": "attribution-z",
+      "text": "Source Z fictional attribution form B: {publisher} / {version_id}"
+    },
+    {
+      "id": "AT-W",
+      "slot": "attribution-w",
+      "text": "Source W fictional attribution: {publisher} / {dataset_id} / {version_id}"
+    },
+    {
+      "id": "AT-P",
+      "slot": "attribution-p",
+      "text": "Source P fictional attribution: {publisher} / {dataset_id} / {version_id}"
+    }
+  ],
+  "aliases": [
+    {"alias": "FICT-Y-ALIAS", "target": "FICT-Y-1.0"}
+  ],
+  "labels": [
+    {
+      "label": "FICT-X-1.0",
+      "branches": [
+        {
+          "branch_id": "x-restricted",
+          "obligations": [
+            {"type": "attribution", "template": "AT-X-RESTRICTED"},
+            {"type": "no_public"}
+          ]
+        },
+        {
+          "branch_id": "x-open",
+          "obligations": [
+            {"type": "attribution", "template": "AT-X-PUB"},
+            {"type": "share_alike"}
+          ]
+        }
+      ]
+    },
+    {
+      "label": "FICT-Y-1.0",
+      "branches": [
+        {
+          "branch_id": "y-open",
+          "obligations": [
+            {"type": "attribution", "template": "AT-Y-PUB"},
+            {"type": "share_alike"}
+          ]
+        }
+      ]
+    },
+    {
+      "label": "FICT-Z-1.0",
+      "branches": [
+        {
+          "branch_id": "z-attrib-only",
+          "obligations": [
+            {"type": "attribution", "template": "AT-Z-A"}
+          ]
+        },
+        {
+          "branch_id": "z-attrib-share",
+          "obligations": [
+            {"type": "attribution", "template": "AT-Z-B"},
+            {"type": "share_alike"}
+          ]
+        }
+      ]
+    },
+    {
+      "label": "FICT-W-1.0",
+      "branches": [
+        {
+          "branch_id": "w-open",
+          "obligations": [
+            {"type": "attribution", "template": "AT-W"}
+          ]
+        }
+      ]
+    },
+    {
+      "label": "FICT-P-1.0",
+      "branches": [
+        {
+          "branch_id": "p-permissive",
+          "obligations": [
+            {"type": "attribution", "template": "AT-P"}
+          ]
+        }
+      ]
+    },
+    {
+      "label": "FICT-Q-1.0",
+      "branches": [
+        {
+          "branch_id": "q-attrib-only",
+          "obligations": [
+            {"type": "attribution", "template": "AT-W"}
+          ]
+        },
+        {
+          "branch_id": "q-attrib-share",
+          "obligations": [
+            {"type": "attribution", "template": "AT-W"},
+            {"type": "share_alike"}
+          ]
+        }
+      ]
+    }
+  ]
+}

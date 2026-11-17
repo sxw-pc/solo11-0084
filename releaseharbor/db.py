@@ -88,6 +88,29 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_versions_dataset ON versions(dataset_id);
+CREATE TABLE IF NOT EXISTS combo_decisions (
+    decision_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    rule_table_version TEXT NOT NULL,
+    rule_table_fingerprint TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    decision_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS combo_decision_sources (
+    decision_id TEXT NOT NULL REFERENCES combo_decisions(decision_id),
+    position INTEGER NOT NULL,
+    artifact_uid TEXT NOT NULL,
+    dataset_id TEXT,
+    version_id TEXT,
+    filename TEXT,
+    fictional_label TEXT,
+    rule_table_version TEXT NOT NULL,
+    expected_sha256 TEXT NOT NULL,
+    PRIMARY KEY(decision_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_combo_sources_uid ON combo_decision_sources(artifact_uid);
 """.strip()
 
 

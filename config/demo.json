@@ -34,6 +34,12 @@
   "console": {
     "port": 18766
   },
+  "combo": {
+    "rule_table": "fixtures/combo-rules.json",
+    "decision_dir": "combo-decisions",
+    "max_sources": 20,
+    "max_combinations": 1024
+  },
   "demo": {
     "reset_on_start": true
   }

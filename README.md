@@ -28,6 +28,33 @@ python -m unittest discover -s tests -v
 
 复核台默认地址为 <http://127.0.0.1:18766/>。它只实现 GET/HEAD，以 SQLite `mode=ro` + `PRAGMA query_only=ON` 打开台账，不提供任何写接口或文件下载接口。
 
+## 虚构规则的离线组合使用裁决
+
+在“单文件大小与 SHA-256 已验收”之外，本项目提供一个**完全离线、只针对仓库内虚构 `FICT-*` 标签**的组合使用裁决器，回答“这批已验收发布件按选定用途能否交付、需要履行哪些合成义务”。它不解释 CC 等任何真实许可证，也不对任何真实使用下法律结论；门户页采集到的许可文本只作为**非可执行证据**保留，可执行规则只能来自本地受控、带版本的规则表 `fixtures/combo-rules.json`。
+
+两个虚构使用合同：
+
+| 合同 | 语义 | 分支限制 |
+|---|---|---|
+| `internal_aggregate_analysis` | 仅在本地生成不可公开的统计摘要 | 允许带 `no_public`（禁止公开）的分支，仍须履行署名 |
+| `public_redistribution` | 交付可改编、可公开的组合文件并完整署名 | 不能选 `no_public` 或 `no_derivatives`（禁止改编）分支 |
+
+裁决要点：
+
+- 组合输入显式列出已验收 artifact UID 与预期摘要；任一 UID 未在台账验收、磁盘字节复验失配、摘要不符、引用旧规则版次或被重复列入，都只能得到 `undecidable`，**绝不默认允许**。
+- 每个虚构标签可声明多个可选许可分支（署名、同源分享、禁止公开、禁止改编、指定署名模板等）；有的标签允许 A 或 B，二选一即可，但必须对**整个组合产物统一求出一套可执行义务**。
+- 有界枚举所有分支组合（受 `combo.max_combinations` 约束，超出即不可判定），逐组合并为统一义务集；互斥义务（如禁止改编 vs 同源分享、互斥署名模板）会被整体拒绝并给出涉及来源的最小冲突解释，**不做简单并集或逐文件贪心**。
+- 返回全部 **Pareto 非支配可行义务集**及各自的来源见证，而不是把规则顺序的第一个结果当唯一许可；被严格包含的支配解才会被剪枝。
+- 裁决 ID 由合同、规则版次与输入摘要确定性派生；同版次同输入可逐字节重现且幂等保存，更换规则版次只新增裁决、不改写旧证据。
+- 受控规则表在加载时校验自相矛盾分支、循环/悬空别名、互斥署名模板与无上界分支数。
+
+```bash
+# 先有验收台账，再提交本地组合请求 JSON（不触发任何下载）
+python -m releaseharbor combo --config config/demo.json path/to/combo-request.json
+```
+
+独立审计输出写入 `combo-decisions/`（`*.json` 决策记录、`*.md` 人读审计、`combo-audit.jsonl` 事件流），与采集报告 `reports/` 物理分离；组合查询不修改下载、验收或任何原始台账状态。
+
 ## 演示预期结果
 
 fixture 刻意包含两类“真实流水线会遇到”的情况：
@@ -119,31 +146,39 @@ SQLite 主要表：
 
 ```text
 releaseharbor/
-  config.py         严格配置/路径/输出布局校验
+  config.py         严格配置/路径/输出布局校验（含受控 combo 段）
   security.py       精确回环 origin 与绑定地址策略
   httpclient.py     仅 GET/HEAD 的安全 HTTP 客户端
   fixture.py        合成门户 fixture 与内容生成
   portal_pages.py   确定性 HTML 页面
   portal_server.py  本地 mock 门户、HEAD、Range、临时故障
   htmlparse.py      受限 link/meta 提取
-  discovery.py      有界数据集/版本/发布件发现
+  discovery.py      有界数据集/版本/发布件发现 + 门户许可非可执行证据
   downloader.py     断点续传、重试、字节上限与 .part 恢复
-  verify.py         大小/SHA-256 验收与隔离移动
-  ledger.py         SQLite 幂等写入与事件序列
+  verify.py         大小/SHA-256 验收与隔离移动（组合闸门复用其复验）
+  ledger.py         SQLite 幂等写入、事件序列与组合裁决追加表
   collector.py      单发布件元数据 -> 下载 -> 验收流程
   pipeline.py       单次运行编排与 fatal 收尾
-  reports.py        JSON/Markdown/CSV/JSONL 输出
+  reports.py        JSON/Markdown/CSV/JSONL 输出 + 许可证据视图
+  combo_rules.py    受控版本化虚构规则表加载与自洽/有界校验
+  combo_models.py   组合数据模型、统一义务合并、冲突与 Pareto 纯函数
+  combo_request.py  组合请求严格解析
+  combo_gate.py     台账验收/磁盘字节/重复 UID 闸门
+  combo_search.py   有界分支枚举、合同适配与非支配求解
+  combo_reports.py  独立组合决策 JSON/Markdown/JSONL 审计
+  combo_service.py  加载规则表 -> 裁决 -> 幂等持久化 -> 审计输出
   console.py        只读回环复核台
   console_pages.py  无外部资源、全转义 HTML
-  cli.py            demo / collect / serve
+  cli.py            demo / collect / serve / combo
   workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
-config/demo.json    固定时钟演示配置
+tests/              unittest 用例（含组合两合同、互斥、非支配、闸门、复现）
+config/demo.json    固定时钟演示配置（含 combo 段）
 fixtures/portal.json 合成门户数据
+fixtures/combo-rules.json 版本化虚构 FICT-* 规则表
 fixtures/golden/    golden 报告
 ```
 
-实现与测试合计 4340 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+实现与测试均为不超过 300 行的 Python 文件（以仓库文件 `wc -l` 计），运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
 
 ## 合规声明
 

@@ -5,17 +5,20 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import __version__
+from .clock import Clock
+from .combo_service import run_combo_query
 from .config import load_config
 from .console import ConsoleServer
-from .db import database_exists
+from .db import connect, database_exists
 from .errors import ReleaseHarborError
 from .fixture import load_portal_fixture
 from .pipeline import run_pipeline
 from .portal_server import PortalServer
-from .util import relative_posix
+from .util import load_json_file, relative_posix
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -37,6 +40,12 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="start the read-only loopback review console")
     serve.add_argument("--config", default="config/demo.json")
     serve.add_argument("--port", type=int, default=None)
+    combo = subparsers.add_parser(
+        "combo",
+        help="offline fictional combination adjudication from a local request file",
+    )
+    combo.add_argument("--config", default="config/demo.json")
+    combo.add_argument("request", help="path to a local combination request JSON file")
     return parser
 
 
@@ -102,6 +111,32 @@ def _serve(args) -> int:
     return 0
 
 
+def _combo(args) -> int:
+    config = load_config(args.config)
+    if not database_exists(config.download.db_path):
+        raise ReleaseHarborError(
+            "ledger database does not exist; run the demo or collect command first"
+        )
+    request = load_json_file(Path(args.request))
+    connection = connect(config.download.db_path)
+    try:
+        clock = Clock.from_settings(config.clock_mode, config.clock_fixed)
+        outcome = run_combo_query(config, connection, clock, request)
+    finally:
+        connection.close()
+    decision = outcome.decision
+    print(f"decision: {decision['decision_id']}")
+    print(f"contract: {decision['contract_id']}")
+    print(f"status: {decision['status']} (saved={outcome.saved})")
+    print(f"rule_table: {decision['rule_table']['version']}")
+    print(f"feasible_solutions: {len(decision['solutions'])}")
+    for key, path in outcome.outputs.items():
+        print(f"{key}: {path}")
+    if decision["status"] != "deliverable":
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -111,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
             return _collect(args)
         if args.command == "serve":
             return _serve(args)
+        if args.command == "combo":
+            return _combo(args)
         raise ReleaseHarborError(f"unknown command: {args.command}")
     except (ReleaseHarborError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

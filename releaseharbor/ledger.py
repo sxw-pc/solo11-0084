@@ -197,3 +197,69 @@ class Ledger:
                 }
             )
         return result
+
+    def save_combo_decision(self, decision: dict) -> bool:
+        """Persist a combination decision append-only.
+
+        A decision id is a deterministic hash of contract, rule table version,
+        and input digest. Re-running the same request keeps the original
+        evidence; a new rule table version yields a new row and never overwrites
+        an old one. Returns ``False`` when the decision was already on record.
+        """
+        existing = self.connection.execute(
+            "SELECT 1 FROM combo_decisions WHERE decision_id = ?",
+            (decision["decision_id"],),
+        ).fetchone()
+        if existing is not None:
+            return False
+        rule = decision["rule_table"]
+        self.connection.execute(
+            "INSERT INTO combo_decisions(decision_id, created_at, contract_id, status, "
+            "rule_table_version, rule_table_fingerprint, input_digest, decision_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                decision["decision_id"],
+                self.clock.now(),
+                decision["contract_id"],
+                decision["status"],
+                rule["version"],
+                rule["fingerprint"],
+                decision["input_digest"],
+                canonical_json(decision),
+            ),
+        )
+        for source in decision["sources"]:
+            self.connection.execute(
+                "INSERT INTO combo_decision_sources(decision_id, position, artifact_uid, "
+                "dataset_id, version_id, filename, fictional_label, rule_table_version, "
+                "expected_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    decision["decision_id"],
+                    source["position"],
+                    source["artifact_uid"],
+                    source.get("dataset_id"),
+                    source.get("version_id"),
+                    source.get("filename"),
+                    source["fictional_label"],
+                    rule["version"],
+                    source["expected_sha256"],
+                ),
+            )
+        self.connection.commit()
+        return True
+
+    def get_combo_decision(self, decision_id: str) -> dict | None:
+        row = self.connection.execute(
+            "SELECT decision_json FROM combo_decisions WHERE decision_id = ?",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["decision_json"])
+
+    def combo_decision_index(self) -> list[dict]:
+        rows = self.connection.execute(
+            "SELECT decision_id, created_at, contract_id, status, rule_table_version, "
+            "input_digest FROM combo_decisions ORDER BY created_at, decision_id"
+        ).fetchall()
+        return [dict(row) for row in rows]

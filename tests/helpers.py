@@ -25,6 +25,9 @@ def write_project(root: Path, port: int, *, retries: int = 2, channels=None) -> 
     fixture = root / "fixtures" / "portal.json"
     fixture.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(FIXTURE, fixture)
+    shutil.copyfile(
+        ROOT / "fixtures" / "combo-rules.json", root / "fixtures" / "combo-rules.json"
+    )
     config = {
         "schema_version": 1,
         "root": "..",
@@ -54,6 +57,12 @@ def write_project(root: Path, port: int, *, retries: int = 2, channels=None) -> 
         "security": {"request_timeout_seconds": 3},
         "clock": {"mode": "fixed", "fixed": "2026-01-15T12:00:00Z"},
         "console": {"port": 18766},
+        "combo": {
+            "rule_table": "fixtures/combo-rules.json",
+            "decision_dir": "combo-decisions",
+            "max_sources": 20,
+            "max_combinations": 1024,
+        },
         "demo": {"reset_on_start": True},
     }
     path = root / "config" / "demo.json"

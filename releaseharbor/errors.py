@@ -36,3 +36,11 @@ class IntegrityError(ReleaseHarborError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+class RuleTableError(ReleaseHarborError):
+    """A controlled fictional rule table is missing, malformed, or unbounded."""
+
+
+class ComboDecisionError(ReleaseHarborError):
+    """A combination request cannot be interpreted or is not configured."""

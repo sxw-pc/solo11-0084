@@ -22,7 +22,6 @@ class PortalSettings:
     bind_host: str
     base_url: str
 
-
 @dataclass(frozen=True)
 class DiscoverySettings:
     max_datasets: int
@@ -30,7 +29,6 @@ class DiscoverySettings:
     max_artifacts: int
     max_pages: int
     channels: tuple[str, ...]
-
 
 @dataclass(frozen=True)
 class DownloadSettings:
@@ -44,11 +42,16 @@ class DownloadSettings:
     chunk_size: int
     max_artifact_bytes: int
 
-
 @dataclass(frozen=True)
 class ConsoleSettings:
     port: int
 
+@dataclass(frozen=True)
+class ComboSettings:
+    rule_table: Path
+    decision_dir: Path
+    max_sources: int
+    max_combinations: int
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -60,6 +63,7 @@ class AppConfig:
     discovery: DiscoverySettings
     download: DownloadSettings
     console: ConsoleSettings
+    combo: ComboSettings | None
     clock_mode: str
     clock_fixed: str
     request_timeout: float
@@ -74,13 +78,14 @@ class AppConfig:
             self.download.report_dir,
         ):
             ensure_directory(path)
+        if self.combo is not None:
+            ensure_directory(self.combo.decision_dir)
 
 
 def _object(value, label: str) -> dict:
     if not isinstance(value, dict):
         raise ConfigError(f"{label} must be an object")
     return value
-
 
 def _keys(value: dict, label: str, required: set[str], optional: set[str] = frozenset()) -> None:
     missing = required - set(value)
@@ -90,24 +95,20 @@ def _keys(value: dict, label: str, required: set[str], optional: set[str] = froz
     if unknown:
         raise ConfigError(f"{label} has unknown keys: {', '.join(sorted(unknown))}")
 
-
 def _string(value, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{label} must be a non-empty string")
     return value
-
 
 def _integer(value, label: str, low: int, high: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise ConfigError(f"{label} must be an integer in [{low}, {high}]")
     return value
 
-
 def _boolean(value, label: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{label} must be a boolean")
     return value
-
 
 def _fixed_timestamp(value, label: str) -> str:
     text = _string(value, label)
@@ -119,12 +120,33 @@ def _fixed_timestamp(value, label: str) -> str:
         raise ConfigError(f"{label} must include a timezone")
     return format_utc(parsed.astimezone(timezone.utc))
 
-
 def _safe_path(root: Path, raw_value: str, label: str) -> Path:
     try:
         return resolve_under(root, raw_value, label)
     except SecurityBoundaryError as exc:
         raise ConfigError(str(exc)) from exc
+
+def _combo_settings(raw, root: Path, download: DownloadSettings) -> "ComboSettings | None":
+    if raw is None:
+        return None
+    raw = _object(raw, "combo")
+    _keys(raw, "combo",
+          {"rule_table", "decision_dir", "max_sources", "max_combinations"})
+    rule_table = _safe_path(root, _string(raw["rule_table"], "combo.rule_table"), "rule_table")
+    if not rule_table.is_file():
+        raise ConfigError(f"combo.rule_table does not exist: {rule_table}")
+    decision_dir = _safe_path(
+        root, _string(raw["decision_dir"], "combo.decision_dir"), "decision_dir"
+    )
+    # Generated output: keep decisions outside the reset work directory.
+    work = download.work_dir.resolve()
+    if decision_dir.resolve() == work or decision_dir.resolve().is_relative_to(work):
+        raise ConfigError("combo.decision_dir must live outside download.work_dir")
+    return ComboSettings(
+        rule_table, decision_dir,
+        _integer(raw["max_sources"], "combo.max_sources", 1, 50),
+        _integer(raw["max_combinations"], "combo.max_combinations", 1, 100_000),
+    )
 
 
 def _validate_layout(source: Path, fixture: Path, download: DownloadSettings) -> None:
@@ -138,18 +160,12 @@ def _validate_layout(source: Path, fixture: Path, download: DownloadSettings) ->
         if resolved == work or not resolved.is_relative_to(work):
             raise ConfigError(f"download.{label} must live below download.work_dir")
     for output in (
-        download.work_dir,
-        download.artifact_dir,
-        download.quarantine_dir,
-        download.report_dir,
-        download.db_path,
+        download.work_dir, download.artifact_dir, download.quarantine_dir,
+        download.report_dir, download.db_path,
     ):
         for protected in (source, fixture):
-            resolved_output = output.resolve()
-            resolved_input = protected.resolve()
-            if resolved_output == resolved_input or resolved_input.is_relative_to(
-                resolved_output
-            ):
+            out_res, in_res = output.resolve(), protected.resolve()
+            if out_res == in_res or in_res.is_relative_to(out_res):
                 raise ConfigError(f"generated output path would contain an input file: {output}")
 
 
@@ -161,16 +177,13 @@ def load_config(path_value: str | Path) -> AppConfig:
         raise ConfigError(f"cannot read configuration {path}: {exc}") from exc
     raw = _object(raw, "configuration")
     _keys(
-        raw,
-        "configuration",
+        raw, "configuration",
         {"schema_version", "root", "portal", "discovery", "download", "security", "clock"},
-        {"console", "demo"},
+        {"console", "demo", "combo"},
     )
     if raw["schema_version"] != 1:
         raise ConfigError("schema_version must be 1")
-
-    root_value = _string(raw["root"], "root")
-    root = (path.parent / root_value).resolve()
+    root = (path.parent / _string(raw["root"], "root")).resolve()
     if not root.is_dir():
         raise ConfigError(f"project root does not exist: {root}")
 
@@ -210,35 +223,22 @@ def load_config(path_value: str | Path) -> AppConfig:
             raise ConfigError(f"invalid discovery channel: {channel!r}")
         if channel not in channels:
             channels.append(channel)
-
     download_raw = _object(raw["download"], "download")
     _keys(
-        download_raw,
-        "download",
-        {
-            "work_dir",
-            "artifact_dir",
-            "quarantine_dir",
-            "db_path",
-            "report_dir",
-            "retries",
-            "retry_backoff_ms",
-            "chunk_size",
-            "max_artifact_bytes",
-        },
+        download_raw, "download",
+        {"work_dir", "artifact_dir", "quarantine_dir", "db_path", "report_dir",
+         "retries", "retry_backoff_ms", "chunk_size", "max_artifact_bytes"},
     )
+
+    def dpath(key: str, label: str) -> Path:
+        return _safe_path(root, _string(download_raw[key], label), label.split(".")[-1])
+
     download = DownloadSettings(
-        work_dir=_safe_path(root, _string(download_raw["work_dir"], "download.work_dir"), "work_dir"),
-        artifact_dir=_safe_path(
-            root, _string(download_raw["artifact_dir"], "download.artifact_dir"), "artifact_dir"
-        ),
-        quarantine_dir=_safe_path(
-            root, _string(download_raw["quarantine_dir"], "download.quarantine_dir"), "quarantine_dir"
-        ),
-        db_path=_safe_path(root, _string(download_raw["db_path"], "download.db_path"), "db_path"),
-        report_dir=_safe_path(
-            root, _string(download_raw["report_dir"], "download.report_dir"), "report_dir"
-        ),
+        work_dir=dpath("work_dir", "download.work_dir"),
+        artifact_dir=dpath("artifact_dir", "download.artifact_dir"),
+        quarantine_dir=dpath("quarantine_dir", "download.quarantine_dir"),
+        db_path=dpath("db_path", "download.db_path"),
+        report_dir=dpath("report_dir", "download.report_dir"),
         retries=_integer(download_raw["retries"], "download.retries", 0, 10),
         retry_backoff_ms=_integer(
             download_raw["retry_backoff_ms"], "download.retry_backoff_ms", 0, 10_000
@@ -256,7 +256,6 @@ def load_config(path_value: str | Path) -> AppConfig:
         raise ConfigError("security.request_timeout_seconds must be numeric")
     if not 0.1 <= float(timeout_raw) <= 60.0:
         raise ConfigError("security.request_timeout_seconds must be in [0.1, 60.0]")
-
     clock_raw = _object(raw["clock"], "clock")
     _keys(clock_raw, "clock", {"mode"}, {"fixed"})
     mode = _string(clock_raw["mode"], "clock.mode")
@@ -270,31 +269,31 @@ def load_config(path_value: str | Path) -> AppConfig:
 
     console_raw = _object(raw.get("console", {"port": 18766}), "console")
     _keys(console_raw, "console", {"port"})
-    console = ConsoleSettings(
-        port=_integer(console_raw["port"], "console.port", 1, 65535)
-    )
+    console = ConsoleSettings(_integer(console_raw["port"], "console.port", 1, 65535))
     demo_raw = _object(raw.get("demo", {"reset_on_start": False}), "demo")
     _keys(demo_raw, "demo", {"reset_on_start"})
     reset = _boolean(demo_raw["reset_on_start"], "demo.reset_on_start")
+    combo = _combo_settings(raw.get("combo"), root, download)
     _validate_layout(path, fixture, download)
 
     return AppConfig(
-        source_path=path,
-        root=root,
-        raw=raw,
-        fingerprint=sha256_bytes(canonical_json(raw).encode("utf-8"))[:16],
-        portal=PortalSettings(fixture, bind_host, base_url),
-        discovery=DiscoverySettings(
+        path,
+        root,
+        raw,
+        sha256_bytes(canonical_json(raw).encode("utf-8"))[:16],
+        PortalSettings(fixture, bind_host, base_url),
+        DiscoverySettings(
             _integer(discovery_raw["max_datasets"], "discovery.max_datasets", 1, 200),
             _integer(discovery_raw["max_versions"], "discovery.max_versions", 1, 100),
             _integer(discovery_raw["max_artifacts"], "discovery.max_artifacts", 1, 200),
             _integer(discovery_raw["max_pages"], "discovery.max_pages", 1, 2000),
             tuple(channels),
         ),
-        download=download,
-        console=console,
-        clock_mode=mode,
-        clock_fixed=fixed,
-        request_timeout=float(timeout_raw),
-        reset_on_start=reset,
+        download,
+        console,
+        combo,
+        mode,
+        fixed,
+        float(timeout_raw),
+        reset,
     )

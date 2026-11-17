@@ -60,6 +60,21 @@ class DiscoveryResult:
     issues: list[dict]
 
 
+def portal_license_evidence(dataset: DiscoveredDataset) -> dict:
+    """Describe portal license text as non-executable provenance only.
+
+    The captured string remains a human-readable label for the intake report;
+    combination adjudication never treats it as an executable rule. Executable
+    fictional rules come exclusively from the controlled local rule table.
+    """
+    return {
+        "dataset_id": dataset.dataset_id,
+        "portal_license_text": dataset.license,
+        "executable": False,
+        "rule_source": "controlled-local-rule-table",
+    }
+
+
 class _BudgetExceeded(DiscoveryError):
     pass
 
@@ -112,24 +127,31 @@ class Discovery:
             self.blocked.append({"url": candidate, "reason": str(exc)})
             return None
 
+    def _collect_links(self, parsed, class_name: str, base_url: str) -> list[ValidatedTarget]:
+        links: dict[str, ValidatedTarget] = {}
+        for anchor in parsed.anchors:
+            if not has_class(anchor.attrs, class_name):
+                continue
+            target = self._link(base_url, anchor.attrs.get("href", ""))
+            if target is not None:
+                links[target.url] = target
+        return [links[key] for key in sorted(links)]
+
+    def _cap_links(self, links, limit: int, code: str, subject: str) -> list:
+        if len(links) <= limit:
+            return links
+        self._emit(code, subject, {"found": len(links), "kept": limit})
+        return links[:limit]
+
     def discover(self) -> DiscoveryResult:
         home = self.client.validate(self.config.portal.base_url).url
         page = parse_portal_html(self._load(home))
-        links: dict[str, ValidatedTarget] = {}
-        for anchor in page.anchors:
-            if not has_class(anchor.attrs, "dataset-link"):
-                continue
-            target = self._link(home, anchor.attrs.get("href", ""))
-            if target is not None:
-                links[target.url] = target
-        ordered = [links[key] for key in sorted(links)]
-        if len(ordered) > self.config.discovery.max_datasets:
-            self._emit(
-                "discovery.dataset_limit",
-                "datasets",
-                {"found": len(ordered), "kept": self.config.discovery.max_datasets},
-            )
-            ordered = ordered[: self.config.discovery.max_datasets]
+        ordered = self._cap_links(
+            self._collect_links(page, "dataset-link", home),
+            self.config.discovery.max_datasets,
+            "discovery.dataset_limit",
+            "datasets",
+        )
         datasets: list[DiscoveredDataset] = []
         seen_ids: set[str] = set()
         for target in ordered:
@@ -163,21 +185,12 @@ class Discovery:
             license=license_name,
             source_url=page_url,
         )
-        version_links: dict[str, ValidatedTarget] = {}
-        for anchor in parsed.anchors:
-            if not has_class(anchor.attrs, "version-link"):
-                continue
-            target = self._link(page_url, anchor.attrs.get("href", ""))
-            if target is not None:
-                version_links[target.url] = target
-        ordered = [version_links[key] for key in sorted(version_links)]
-        if len(ordered) > self.config.discovery.max_versions:
-            self._emit(
-                "discovery.version_limit",
-                dataset.dataset_id,
-                {"found": len(ordered), "kept": self.config.discovery.max_versions},
-            )
-            ordered = ordered[: self.config.discovery.max_versions]
+        ordered = self._cap_links(
+            self._collect_links(parsed, "version-link", page_url),
+            self.config.discovery.max_versions,
+            "discovery.version_limit",
+            dataset.dataset_id,
+        )
         seen_versions: set[str] = set()
         for target in ordered:
             try:
@@ -215,21 +228,12 @@ class Discovery:
         if not label or not channel or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", released):
             raise DiscoveryError("version metadata is incomplete")
         version = DiscoveredVersion(version_id, label, channel, released, page_url)
-        artifact_links: dict[str, ValidatedTarget] = {}
-        for anchor in parsed.anchors:
-            if not has_class(anchor.attrs, "artifact-link"):
-                continue
-            target = self._link(page_url, anchor.attrs.get("href", ""))
-            if target is not None:
-                artifact_links[target.url] = target
-        ordered = [artifact_links[key] for key in sorted(artifact_links)]
-        if len(ordered) > self.config.discovery.max_artifacts:
-            self._emit(
-                "discovery.artifact_limit",
-                version_id,
-                {"found": len(ordered), "kept": self.config.discovery.max_artifacts},
-            )
-            ordered = ordered[: self.config.discovery.max_artifacts]
+        ordered = self._cap_links(
+            self._collect_links(parsed, "artifact-link", page_url),
+            self.config.discovery.max_artifacts,
+            "discovery.artifact_limit",
+            version_id,
+        )
         seen_names: set[str] = set()
         for target in ordered:
             attributes = self._artifact_attrs(parsed, target.url, page_url)
@@ -241,17 +245,9 @@ class Discovery:
             seen_names.add(filename)
             version.artifacts.append(
                 ArtifactRef(
-                    dataset_id=dataset.dataset_id,
-                    dataset_title=dataset.title,
-                    version_id=version_id,
-                    version_label=label,
-                    channel=channel,
-                    released_at=released,
-                    filename=filename,
-                    url=target.url,
-                    media_type=attributes["media_type"],
-                    expected_size=attributes["size"],
-                    expected_sha256=attributes["sha256"],
+                    dataset.dataset_id, dataset.title, version_id, label, channel,
+                    released, filename, target.url, attributes["media_type"],
+                    attributes["size"], attributes["sha256"],
                 )
             )
         version.artifacts.sort(key=lambda item: item.filename)
@@ -266,28 +262,31 @@ class Discovery:
             resolved, _ = urldefrag(urljoin(page_url, anchor.attrs.get("href", "")))
             if resolved != target_url:
                 continue
-            name_raw = anchor.attrs.get("data-filename", "")
+
+            def invalid(reason: str) -> None:
+                self._issue("artifact.metadata_invalid", anchor.attrs.get("data-filename", ""),
+                            {"reason": reason})
+
             try:
-                name = safe_filename(name_raw)
+                name = safe_filename(anchor.attrs.get("data-filename", ""))
             except SecurityBoundaryError as exc:
-                self._issue("artifact.metadata_invalid", name_raw, {"reason": str(exc)})
+                invalid(str(exc))
                 return None
             sha = anchor.attrs.get("data-sha256", "")
             if not is_sha256(sha):
-                self._issue("artifact.metadata_invalid", name, {"reason": "invalid sha256"})
+                invalid("invalid sha256")
                 return None
-            size_raw = anchor.attrs.get("data-size", "")
             try:
-                size = int(size_raw)
+                size = int(anchor.attrs.get("data-size", ""))
             except ValueError:
-                self._issue("artifact.metadata_invalid", name, {"reason": "invalid size"})
+                invalid("invalid size")
                 return None
             if size < 0 or size > 52_428_800:
-                self._issue("artifact.metadata_invalid", name, {"reason": "size out of range"})
+                invalid("size out of range")
                 return None
             media_type = anchor.attrs.get("data-media-type", "")
             if not _MEDIA_TYPE.fullmatch(media_type):
-                self._issue("artifact.metadata_invalid", name, {"reason": "invalid media type"})
+                invalid("invalid media type")
                 return None
             return {
                 "filename": name,

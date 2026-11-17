@@ -160,6 +160,30 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
     }
 
 
+def portal_license_evidence_report(connection: sqlite3.Connection) -> dict:
+    """Expose portal license strings strictly as non-executable provenance.
+
+    The intake ledger stores free-text license labels captured from portal
+    pages. They remain human evidence only; executable fictional rules are
+    loaded solely from the controlled local rule table used by the combo
+    modules, never from these strings.
+    """
+    rows = connection.execute(
+        "SELECT dataset_id, license, source_url FROM datasets ORDER BY dataset_id"
+    ).fetchall()
+    return {
+        "schema_version": 1,
+        "notice": ("Portal license text is non-executable provenance. Combination "
+                   "adjudication uses only the controlled local fictional rule table."),
+        "datasets": [
+            {"dataset_id": row["dataset_id"], "portal_license_text": row["license"],
+             "source_url": row["source_url"], "executable": False,
+             "rule_source": "controlled-local-rule-table"}
+            for row in rows
+        ],
+    }
+
+
 def _markdown(report: dict) -> str:
     run = report["run"]
     summary = report["summary"]
