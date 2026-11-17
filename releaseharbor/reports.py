@@ -239,7 +239,9 @@ def _manifest_csv(report: dict) -> str:
                         artifact["media_type"],
                         artifact["expected"]["size"],
                         artifact["expected"]["sha256"],
-                        "" if artifact["observed"]["size"] is None else artifact["observed"]["size"],
+                        ""
+                        if artifact["observed"]["size"] is None
+                        else artifact["observed"]["size"],
                         artifact["observed"]["sha256"] or "",
                         artifact["status"],
                         artifact["local_path"] or "",
@@ -248,6 +250,233 @@ def _manifest_csv(report: dict) -> str:
                     ]
                 )
     return buffer.getvalue()
+
+
+def build_observation_contracts(
+    connection: sqlite3.Connection,
+    config,
+    run_id: str,
+    precision=None,
+) -> dict:
+    """Adjudicate CSV/JSONL observation mirrors without touching intake state.
+
+    ``precision`` is an optional :class:`~releaseharbor.observations.PrecisionRule`.
+    Changing it produces new verdicts and a new precision fingerprint; earlier
+    reports are never rewritten.
+    """
+
+    from .collector import observation_sources
+    from .observations import DEFAULT_PRECISION, adjudicate
+
+    sources = observation_sources(config, connection, run_id)
+    versions = []
+    for dataset_id, by_version in sorted(sources.items()):
+        for version_id, pair in sorted(by_version.items()):
+            contracts = adjudicate(
+                pair["csv"],
+                pair["jsonl"],
+                precision=precision or DEFAULT_PRECISION,
+                run_id=run_id,
+            )
+            versions.append(
+                {
+                    "dataset_id": dataset_id,
+                    "version_id": version_id,
+                    "contracts": contracts,
+                }
+            )
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "scope": sorted({item["dataset_id"] for item in versions}),
+        "versions": versions,
+    }
+
+
+def _observation_markdown(report: dict, contract_name: str) -> str:
+    labels = {
+        "observation_audit": "Row-level observation mirror audit",
+        "daily_summary": "Daily aggregate dashboard summary",
+    }
+    warnings = {
+        "observation_audit": (
+            "Row-level verdict: requires one global physical-row bijection per "
+            "site/date group."
+        ),
+        "daily_summary": (
+            "Aggregate-only verdict: individual rows may be recombined. "
+            "MUST NOT be used for row-level audit."
+        ),
+    }
+    lines = [
+        f"# {labels[contract_name]}",
+        "",
+        f"- Run: `{report['run_id']}`",
+        f"- Scope: {', '.join(report['scope']) or 'none'}",
+        "",
+        f"> {warnings[contract_name]}",
+        "",
+    ]
+    for item in report["versions"]:
+        contract = item["contracts"][contract_name]
+        lines.extend(
+            [
+                f"## `{item['dataset_id']}/{item['version_id']}` - **{contract['status']}**",
+                "",
+                "| Source | Filename | Status | Observed bytes | Observed SHA-256 |",
+                "|---|---|---|---:|---|",
+            ]
+        )
+        for source in contract["sources"]:
+            observed = source["observed"]
+            lines.append(
+                f"| {source['media_type']} | {source['filename']} | {source['status']} | "
+                f"{'' if observed['size'] is None else observed['size']} | "
+                f"{observed['sha256'] or ''} |"
+            )
+        lines.append("")
+        lines.append(f"- Precision: `{contract['precision']['rule_text']}`")
+        fingerprint = contract.get("precision", {}).get("fingerprint")
+        lines.append(f"- Precision fingerprint: `{fingerprint}`")
+        lines.append(f"- Shared source digest: `{contract.get('source_digest')}`")
+        lines.append(f"- Notice: {contract['notice']}")
+        witness = contract.get("witness")
+        if witness:
+            lines.append(
+                "- Witness: `" + json.dumps(witness, ensure_ascii=True, sort_keys=True) + "`"
+            )
+        lines.append("")
+        for issue in contract["issues"]:
+            lines.append(
+                f"- UNDECIDABLE {issue['source']} line "
+                f"{'-' if issue['line'] is None else issue['line']}: `{issue['code']}` "
+                f"{json.dumps(issue['detail'], ensure_ascii=True, sort_keys=True)}"
+            )
+        if contract["issues"]:
+            lines.append("")
+        for group in contract["groups"]:
+            key = f"{group['site_id']} @ {group['observed_on']}"
+            if contract_name == "daily_summary":
+                lines.append(
+                    f"### {key} - csv_observations={group['csv_count']} "
+                    f"jsonl_observations={group['json_count']} summary={group['summary']}"
+                )
+                lines.append("")
+                totals = group["totals"]
+                lines.append(
+                    f"- CSV totals: pm25 {totals['csv']['pm25']} pm10 {totals['csv']['pm10']}"
+                )
+                lines.append(
+                    f"- JSONL totals: pm25 {totals['json']['pm25']} pm10 {totals['json']['pm10']}"
+                )
+                if group["reasons"]:
+                    lines.append(f"- Reasons: {', '.join(group['reasons'])}")
+                lines.append(
+                    "- Row-level pairing is intentionally not reported by this contract."
+                )
+                lines.append("")
+                continue
+            lines.append(f"### {key} - audit={group['audit']}")
+            lines.append("")
+            lines.append(
+                f"- CSV physical lines: {group['csv_lines']} | JSONL physical lines: "
+                f"{group['json_lines']}"
+            )
+            if group["audit_reasons"]:
+                lines.append(f"- Audit reasons: {', '.join(group['audit_reasons'])}")
+            if group["duplicate_rows"]:
+                lines.append(
+                    f"- Repeated identical rows: "
+                    f"{json.dumps(group['duplicate_rows'], ensure_ascii=True, sort_keys=True)}"
+                )
+            if group["pairing"]:
+                lines.append("")
+                lines.append(
+                    "| CSV line | JSONL line | CSV pm25 | CSV pm10 | "
+                    "JSONL pm25 | JSONL pm10 |"
+                )
+                lines.append("|---:|---:|---|---|---|---|")
+                for pairing in group["pairing"]:
+                    lines.append(
+                        f"| {pairing['csv_line']} | {pairing['json_line']} | "
+                        f"{pairing['csv']['pm25']} | {pairing['csv']['pm10']} | "
+                        f"{pairing['json']['pm25']} | {pairing['json']['pm10']} |"
+                    )
+            if group["unmatched_csv_lines"] or group["unmatched_json_lines"]:
+                lines.append(
+                    f"- Minimum row set blocking a bijection "
+                    f"(size {group['minimum_removal_size']}): "
+                    f"CSV {group['unmatched_csv_lines']} / "
+                    f"JSONL {group['unmatched_json_lines']}"
+                )
+                for index, alternate in enumerate(group["alternate_witnesses"], start=1):
+                    lines.append(
+                        f"- Alternative minimum set {index}: "
+                        f"CSV {alternate['unmatched_csv_lines']} / "
+                        f"JSONL {alternate['unmatched_json_lines']}"
+                    )
+            lines.append("")
+    lines.append("End of deterministic dual-format observation report.\n")
+    return "\n".join(lines)
+
+
+def write_observation_reports(
+    connection: sqlite3.Connection, config, run_id: str
+) -> dict[str, str]:
+    report = build_observation_contracts(connection, config, run_id)
+    directory = config.download.report_dir
+    ensure_directory(directory)
+    audit_json = directory / "observation_audit.json"
+    audit_md = directory / "observation_audit.md"
+    summary_json = directory / "daily_summary.json"
+    summary_md = directory / "daily_summary.md"
+    audit_payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "scope": report["scope"],
+        "contract": "observation_audit",
+        "versions": [
+            {
+                "dataset_id": item["dataset_id"],
+                "version_id": item["version_id"],
+                **item["contracts"]["observation_audit"],
+            }
+            for item in report["versions"]
+        ],
+    }
+    summary_payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "scope": report["scope"],
+        "contract": "daily_summary",
+        "versions": [
+            {
+                "dataset_id": item["dataset_id"],
+                "version_id": item["version_id"],
+                **item["contracts"]["daily_summary"],
+            }
+            for item in report["versions"]
+        ],
+    }
+    atomic_write_text(
+        audit_json,
+        json.dumps(audit_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+    )
+    atomic_write_text(audit_md, _observation_markdown(report, "observation_audit"))
+    atomic_write_text(
+        summary_json,
+        json.dumps(
+            summary_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        + "\n",
+    )
+    atomic_write_text(summary_md, _observation_markdown(report, "daily_summary"))
+    return {
+        "observation_audit_json": relative_posix(config.root, audit_json),
+        "observation_audit_markdown": relative_posix(config.root, audit_md),
+        "daily_summary_json": relative_posix(config.root, summary_json),
+        "daily_summary_markdown": relative_posix(config.root, summary_md),
+    }
 
 
 def write_reports(connection: sqlite3.Connection, config, run_id: str) -> dict[str, str]:
@@ -268,9 +497,11 @@ def write_reports(connection: sqlite3.Connection, config, run_id: str) -> dict[s
         json.dumps(event, ensure_ascii=True, sort_keys=True) for event in report["events"]
     ]
     atomic_write_text(audit_path, "\n".join(audit_lines) + ("\n" if audit_lines else ""))
-    return {
+    paths = {
         "report_json": relative_posix(config.root, json_path),
         "report_markdown": relative_posix(config.root, markdown_path),
         "manifest_csv": relative_posix(config.root, manifest_path),
         "audit_jsonl": relative_posix(config.root, audit_path),
     }
+    paths.update(write_observation_reports(connection, config, run_id))
+    return paths

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import IntegrityError
-from .util import ensure_directory, safe_filename, safe_segment, sha256_file
+from .util import ensure_directory, safe_filename, safe_segment, sha256_bytes, sha256_file
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,22 @@ class IntegrityReport:
         return self.size_ok and self.digest_ok
 
 
+def verify_bytes(data: bytes, expected_size: int, expected_sha256: str) -> IntegrityReport:
+    """Accept an in-memory payload against a declared size and digest.
+
+    Used by secondary, offline consumers that must re-establish that the bytes
+    they are about to interpret are still the bytes the intake gate accepted.
+    """
+
+    actual_sha256 = sha256_bytes(data)
+    return IntegrityReport(
+        actual_size=len(data),
+        actual_sha256=actual_sha256,
+        size_ok=len(data) == expected_size,
+        digest_ok=actual_sha256 == (expected_sha256 or "").lower(),
+    )
+
+
 def verify_file(path: Path, expected_size: int, expected_sha256: str) -> IntegrityReport:
     if not path.is_file():
         raise IntegrityError("missing_file", f"artifact file is missing: {path}")
@@ -31,7 +47,7 @@ def verify_file(path: Path, expected_size: int, expected_sha256: str) -> Integri
         actual_size=actual_size,
         actual_sha256=actual_sha256,
         size_ok=actual_size == expected_size,
-        digest_ok=actual_sha256 == expected_sha256.lower(),
+        digest_ok=actual_sha256 == (expected_sha256 or "").lower(),
     )
 
 

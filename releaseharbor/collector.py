@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from .discovery import ArtifactRef
 from .downloader import Downloader, artifact_destination
 from .errors import IntegrityError, SecurityBoundaryError, TransportError
@@ -243,3 +241,100 @@ class ArtifactProcessor:
         )
         self._event("artifact.quarantined", ref, payload, "warning")
         return status
+
+
+# The offline observation-mirror contracts are scoped to the synthetic
+# air-quality release and its two documented media types.  Restricting scope
+# this way keeps unrelated CSV-only datasets out of the observation reports.
+SYNTHETIC_OBSERVATION_DATASET = "air-quality"
+OBSERVATION_MEDIA_TYPES = ("text/csv", "application/x-ndjson")
+
+
+def observation_sources(config, connection, run_id: str) -> dict[str, dict[str, object]]:
+    """Re-read observation artifacts for offline dual-format adjudication.
+
+    Scope is the synthetic ``air-quality`` dataset restricted to the two
+    documented observation media types.  Once a version is in scope, both
+    sides are loaded even when one is missing, quarantined, or no longer
+    matches its accepted digest, so the contracts can answer ``unknown``
+    instead of silently omitting the version.
+
+    This runs after the ordinary intake loop and never changes an artifact's
+    download, acceptance, or quarantine outcome.
+    """
+
+    from .observations import ArtifactSource, Issue, load_artifact_source
+
+    rows = connection.execute(
+        "SELECT * FROM artifacts WHERE last_run_id = ? ORDER BY dataset_id, version_id, filename",
+        (run_id,),
+    ).fetchall()
+    by_version: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        by_version.setdefault((row["dataset_id"], row["version_id"]), []).append(dict(row))
+
+    grouped: dict[str, dict[str, object]] = {}
+    for (dataset_id, version_id), artifacts in sorted(by_version.items()):
+        if dataset_id != SYNTHETIC_OBSERVATION_DATASET:
+            continue
+        if not any(
+            (item.get("media_type") or "") in OBSERVATION_MEDIA_TYPES
+            for item in artifacts
+        ):
+            continue
+        csv_row = next(
+            (item for item in artifacts if (item.get("media_type") or "") == "text/csv"),
+            None,
+        )
+        json_row = next(
+            (
+                item
+                for item in artifacts
+                if (item.get("media_type") or "") == "application/x-ndjson"
+            ),
+            None,
+        )
+        sources: dict[str, ArtifactSource] = {}
+        for kind, row, media, fallback in (
+            ("csv", csv_row, "text/csv", "samples.csv"),
+            ("jsonl", json_row, "application/x-ndjson", "samples.jsonl"),
+        ):
+            filename = (row or {}).get("filename") or fallback
+            if row is None:
+                sources[kind] = ArtifactSource(
+                    kind=kind,
+                    filename=filename,
+                    media_type=media,
+                    status="absent",
+                    expected_size=0,
+                    expected_sha256="",
+                    issues=[
+                        Issue(
+                            kind,
+                            None,
+                            "artifact_missing",
+                            {"filename": filename, "reason": "no counterpart in this version"},
+                        )
+                    ],
+                )
+                continue
+            local_path = None
+            raw_local = row.get("local_path") or row.get("quarantine_path")
+            if raw_local:
+                candidate = (config.root / raw_local).resolve()
+                try:
+                    candidate.relative_to(config.root.resolve())
+                except ValueError:
+                    candidate = None
+                local_path = candidate
+            sources[kind] = load_artifact_source(
+                kind=kind,
+                filename=filename,
+                media_type=row.get("media_type") or media,
+                status=row.get("status") or "failed",
+                expected_size=int(row.get("expected_size") or 0),
+                expected_sha256=row.get("expected_sha256") or "",
+                path=local_path,
+            )
+        grouped.setdefault(dataset_id, {})[version_id] = sources
+    return grouped
