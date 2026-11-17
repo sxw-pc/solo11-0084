@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .budget import budget_events_for_artifact
 from .discovery import ArtifactRef
 from .downloader import Downloader, artifact_destination
 from .errors import IntegrityError, SecurityBoundaryError, TransportError
@@ -50,6 +51,31 @@ class ArtifactProcessor:
         payload = self._base_detail(ref)
         payload.update({"code": code, "detail": detail})
         self._event("artifact.failed", ref, payload, "warning")
+
+    def _maybe_adjudicate_budget(self, ref: ArtifactRef, path: Path) -> None:
+        """Offline disclosure adjudication for configured synthetic budget CSVs.
+
+        Runs only after the artifact is accepted (verified/skipped) and never
+        changes the artifact's ledger status; outcomes are audit events plus a
+        steward-side adjudication JSON under the report directory.
+        """
+        for spec in self.config.budget.adjudications:
+            if (spec.dataset_id, spec.version_id, spec.filename) != (
+                ref.dataset_id,
+                ref.version_id,
+                ref.filename,
+            ):
+                continue
+            events = budget_events_for_artifact(
+                self.config,
+                spec,
+                path,
+                ref.expected_size,
+                ref.expected_sha256,
+                self._base_detail(ref),
+            )
+            for code, level, detail in events:
+                self._event(code, ref, detail, level)
 
     def process(self, ref: ArtifactRef) -> str:
         row = self.ledger.upsert_artifact(self.run_id, ref)
@@ -134,6 +160,7 @@ class ArtifactProcessor:
                     }
                 )
                 self._event("artifact.skipped", ref, payload)
+                self._maybe_adjudicate_budget(ref, target)
                 return "skipped"
             self._event(
                 "artifact.local_invalid",
@@ -203,6 +230,7 @@ class ArtifactProcessor:
                 }
             )
             self._event("artifact.verified", ref, payload)
+            self._maybe_adjudicate_budget(ref, result.path)
             return "verified"
 
         quarantine_path = quarantine_file(

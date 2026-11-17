@@ -35,6 +35,21 @@ def verify_file(path: Path, expected_size: int, expected_sha256: str) -> Integri
     )
 
 
+def require_accepted(path: Path, expected_size: int, expected_sha256: str) -> IntegrityReport:
+    """Re-verify an accepted artifact on disk or raise a checkable error."""
+    report = verify_file(path, expected_size, expected_sha256)
+    if not report.accepted:
+        failed = []
+        if not report.size_ok:
+            failed.append(f"size {report.actual_size} != expected {expected_size}")
+        if not report.digest_ok:
+            failed.append(f"sha256 {report.actual_sha256} != expected {expected_sha256.lower()}")
+        raise IntegrityError(
+            "reverify_failed", f"on-disk re-verification failed for {path}: {'; '.join(failed)}"
+        )
+    return report
+
+
 def quarantine_file(
     source: Path,
     quarantine_root: Path,

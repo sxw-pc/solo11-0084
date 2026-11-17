@@ -36,3 +36,12 @@ class IntegrityError(ReleaseHarborError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+class BudgetError(ReleaseHarborError):
+    """A budget adjudication input check or safety search failed."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail

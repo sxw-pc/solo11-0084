@@ -119,7 +119,7 @@ SQLite 主要表：
 
 ```text
 releaseharbor/
-  config.py         严格配置/路径/输出布局校验
+  config.py         严格配置/路径/输出布局校验（含可选 budget 节）
   security.py       精确回环 origin 与绑定地址策略
   httpclient.py     仅 GET/HEAD 的安全 HTTP 客户端
   fixture.py        合成门户 fixture 与内容生成
@@ -128,22 +128,54 @@ releaseharbor/
   htmlparse.py      受限 link/meta 提取
   discovery.py      有界数据集/版本/发布件发现
   downloader.py     断点续传、重试、字节上限与 .part 恢复
-  verify.py         大小/SHA-256 验收与隔离移动
+  verify.py         大小/SHA-256 验收、隔离移动与磁盘复验闸门
   ledger.py         SQLite 幂等写入与事件序列
-  collector.py      单发布件元数据 -> 下载 -> 验收流程
+  collector.py      单发布件元数据 -> 下载 -> 验收 -> 预算裁决钩子
   pipeline.py       单次运行编排与 fatal 收尾
   reports.py        JSON/Markdown/CSV/JSONL 输出
+  budgetflow.py     运输表可行性的精确整数最大流/循环流求解
+  budgetinput.py    预算 CSV 与敏感格清单的严格校验、预算配置节
+  budgetdecide.py   单合同裁决：全局最小遮盖、可行区间、见证、冲突核
+  budget.py         裁决编排、裁决 JSON 落盘、报告小节与事件汇总
   console.py        只读回环复核台
   console_pages.py  无外部资源、全转义 HTML
   cli.py            demo / collect / serve
   workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
+tests/              60 个 unittest 用例
 config/demo.json    固定时钟演示配置
 fixtures/portal.json 合成门户数据
 fixtures/golden/    golden 报告
 ```
 
-实现与测试合计 4340 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+实现与测试合计 5784 行 Python（以仓库文件 `wc -l` 计），所有实现文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+
+## 预算交叉表反推安全裁决（离线、合成数据）
+
+针对合成预算发布件 `budget_lines.csv`（`department,fiscal_year,account,amount_usd`），仓库提供可选的**反推安全发布裁决**：行列合计与部分明细同时公开时，即使敏感金额单元格被遮盖，也可能被合计精确反推。裁决完全离线，只处理虚构预算单元格，不改变原发布件的 `verified` 状态。
+
+- **输入闸门**：CSV 必须已通过验收且磁盘复验一致（`verify.require_accepted`，来源字节变化即报 `source_reverify_failed`）；敏感单元格清单来自受控本地 manifest（`budget.adjudications[].manifest`）。重复键、缺失金额、负值、非整数、声明合计不一致等都会给出带稳定代码的可核查错误。
+- **模型**：每个 `fiscal_year` 独立构成 department×account 非负整数矩阵，跨年度不混合。某个敏感格在“已公开合计 + 可见明细 + 非负整数约束”下只有唯一可行金额即视为泄露——判定用精确整数最大流（运输表全幺模），而非遮盖计数或线性秩，因此零下界导致的可行域坍缩也能被识别。
+- **两种公开合同**：`marginals`（保留全部行/列合计，2×2 样例需遮住构成可行循环的四个明细）与 `details`（保留部门行合计、不发布账户列合计，2×2 样例只需遮 A-X 与 A-Y）。同一输入两合同的发布表不同，且都给出每个敏感格的可行最小/最大金额与两份取值不同的替代矩阵见证（不标出哪份是源真实值）。
+- **全局最小遮盖**：对小型合成矩阵做有界枚举求全局最小遮盖（非一次局部贪心），同成本方案按稳定 (department, account) 业务键排序并记录审计理由；任何输入变化都会全局重求，不复用模板。
+- **拒绝公开**：若无安全方案（例如某列合计为 0 使敏感格被零下界钉死），该年度该合同拒绝公开，报告最小冲突约束集合，且不输出任何可反推敏感数值的发布片段。
+
+配置示例（可选顶层 `budget` 节）：
+
+```json
+"budget": {
+  "adjudications": [
+    {
+      "dataset_id": "civic-budget",
+      "version_id": "2025.1",
+      "filename": "budget_lines.csv",
+      "manifest": "config/budget_sensitive.json",
+      "contracts": ["marginals", "details"]
+    }
+  ]
+}
+```
+
+裁决结果写入 `reports/budget/<dataset>/<version>/<file>.adjudication.json`（steward 侧审计件，只有其中每个 decision 的 `publication` 块是可发布内容），并以 `budget.adjudicated` / `budget.refused` / `budget.error` 审计事件进入台账；`report.json` 与 `report.md` 在存在裁决事件时附 `budget_adjudications` 小节。
 
 ## 合规声明
 

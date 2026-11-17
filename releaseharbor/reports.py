@@ -7,6 +7,7 @@ import io
 import json
 import sqlite3
 
+from .budget import budget_markdown_lines, budget_report_section
 from .util import atomic_write_text, ensure_directory, relative_posix
 
 
@@ -145,7 +146,7 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
                 "versions": by_dataset.get(dataset["dataset_id"], []),
             }
         )
-    return {
+    report = {
         "schema_version": 1,
         "run": {
             "run_id": run["run_id"],
@@ -158,6 +159,10 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
         "datasets": dataset_items,
         "events": events,
     }
+    adjudications = budget_report_section(events)
+    if adjudications:
+        report["budget_adjudications"] = adjudications
+    return report
 
 
 def _markdown(report: dict) -> str:
@@ -205,6 +210,9 @@ def _markdown(report: dict) -> str:
                     f"{'' if observed is None else observed} | {artifact['attempts']} |"
                 )
             lines.append("")
+    adjudications = report.get("budget_adjudications")
+    if adjudications:
+        lines.extend(budget_markdown_lines(adjudications))
     lines.append("End of deterministic fixture report.\n")
     return "\n".join(lines)
 

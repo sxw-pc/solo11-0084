@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .budgetinput import BudgetSettings, parse_budget_settings
 from .clock import format_utc
 from .errors import ConfigError, SecurityBoundaryError
 from .security import UrlPolicy, require_loopback_bind
@@ -60,6 +61,7 @@ class AppConfig:
     discovery: DiscoverySettings
     download: DownloadSettings
     console: ConsoleSettings
+    budget: BudgetSettings
     clock_mode: str
     clock_fixed: str
     request_timeout: float
@@ -164,7 +166,7 @@ def load_config(path_value: str | Path) -> AppConfig:
         raw,
         "configuration",
         {"schema_version", "root", "portal", "discovery", "download", "security", "clock"},
-        {"console", "demo"},
+        {"console", "demo", "budget"},
     )
     if raw["schema_version"] != 1:
         raise ConfigError("schema_version must be 1")
@@ -270,9 +272,7 @@ def load_config(path_value: str | Path) -> AppConfig:
 
     console_raw = _object(raw.get("console", {"port": 18766}), "console")
     _keys(console_raw, "console", {"port"})
-    console = ConsoleSettings(
-        port=_integer(console_raw["port"], "console.port", 1, 65535)
-    )
+    console = ConsoleSettings(_integer(console_raw["port"], "console.port", 1, 65535))
     demo_raw = _object(raw.get("demo", {"reset_on_start": False}), "demo")
     _keys(demo_raw, "demo", {"reset_on_start"})
     reset = _boolean(demo_raw["reset_on_start"], "demo.reset_on_start")
@@ -293,6 +293,7 @@ def load_config(path_value: str | Path) -> AppConfig:
         ),
         download=download,
         console=console,
+        budget=parse_budget_settings(raw.get("budget", {}), root),
         clock_mode=mode,
         clock_fixed=fixed,
         request_timeout=float(timeout_raw),
