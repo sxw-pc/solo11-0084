@@ -1,0 +1,12 @@
+{
+  "dataset_id": "transit-counts",
+  "old_version": "v3",
+  "new_version": "v4",
+  "old_zone": "W1",
+  "new_zone": "N4",
+  "old_label_version": "v3-labels",
+  "new_label_version": "v4-labels",
+  "edge_tables": [
+    {"version": "flows-v3-v4", "filename": "flow_edges.csv"}
+  ]
+}

@@ -33,7 +33,7 @@ class ConfigFixtureTests(unittest.TestCase):
         self.assertEqual(len(fixture.datasets), 3)
         self.assertEqual(
             sum(len(version.artifacts) for dataset in fixture.datasets for version in dataset.versions),
-            10,
+            13,
         )
         samples = fixture.artifact("air-quality", "2025-01", "samples.csv")
         self.assertNotEqual(samples.declared_sha256, samples.actual_sha256)

@@ -28,12 +28,12 @@ class DiscoveryTests(unittest.TestCase):
     def test_full_discovery_filters_channels_and_is_deterministic(self):
         result = self.discovery.discover()
         self.assertEqual([item.dataset_id for item in result.datasets], ["air-quality", "civic-budget", "transit-counts"])
-        self.assertEqual(sum(len(item.versions) for item in result.datasets), 5)
+        self.assertEqual(sum(len(item.versions) for item in result.datasets), 8)
         artifacts = [art for ds in result.datasets for ver in ds.versions for art in ver.artifacts]
-        self.assertEqual(len(artifacts), 9)
+        self.assertEqual(len(artifacts), 12)
         self.assertNotIn("nightly-2025-05-11", [ver.version_id for ds in result.datasets for ver in ds.versions])
         self.assertIn("discovery.channel_filtered", self.events)
-        self.assertEqual(result.pages_fetched, 10)
+        self.assertEqual(result.pages_fetched, 13)
         self.assertEqual(result.blocked, [])
 
     def test_limits_apply_to_every_level(self):
@@ -55,7 +55,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_artifact_metadata_is_complete(self):
         result = self.discovery.discover()
-        artifact = result.datasets[2].versions[0].artifacts[0]
+        artifact = result.datasets[2].versions[1].artifacts[0]
         self.assertEqual(artifact.dataset_id, "transit-counts")
         self.assertEqual(artifact.filename, "stations-manifest.txt")
         self.assertEqual(len(artifact.expected_sha256), 64)

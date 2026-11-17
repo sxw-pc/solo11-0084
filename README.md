@@ -5,6 +5,7 @@
 ```
 有限发现 -> 版本/文件元数据采集 -> Range 断点续传 -> 大小 + SHA-256 验收
         -> SQLite 幂等台账 -> JSON/Markdown/CSV/JSONL 审计输出 -> 只读复核台
+        -> 已验收 CSV 的离线跨版整数流转界限（可选）
 ```
 
 仓库中所有机构、数据集、版本、文件名、许可证文本、SHA-256、URL 与发布内容均为合成 fixture。运行时不访问任何外部网络目标，也不包含登录、上传、删除、远程命令、WARC、RSS、邮件、表单、站点监测或选择器回归等旁支能力。
@@ -22,6 +23,9 @@ python -m releaseharbor serve --config config/demo.json
 
 # 3. 一条命令运行测试
 python -m unittest discover -s tests -v
+
+# 4. 演示数据上的跨版区域流转界限（需先运行 demo）
+python -m releaseharbor transit --config config/demo.json --query examples/transit-v3-v4.json
 ```
 
 `demo` 默认会清理配置中的 `artifact_dir`、`quarantine_dir`、`report_dir` 与 SQLite 台账，以保证全新输出可复现。使用 `--keep` 保留上次结果并验证幂等跳过；使用 `--strict` 在出现隔离/失败时返回非零退出码。
@@ -39,10 +43,10 @@ fixture 刻意包含两类“真实流水线会遇到”的情况：
 
 ```text
 status: partial
-datasets=3 versions=5 artifacts=9 verified=8 skipped=0 quarantined=1 failed=0 blocked=0
+datasets=3 versions=8 artifacts=12 verified=11 skipped=0 quarantined=1 failed=0 blocked=0
 ```
 
-`partial` 是**预期**结果：8 个发布件通过大小与摘要验收，1 个发布件被完整性闸门隔离。`nightly` 通道被通道白名单过滤，不计入 9 个发布件。
+`partial` 是**预期**结果：11 个发布件通过大小与摘要验收，1 个发布件被完整性闸门隔离。`nightly` 通道被通道白名单过滤，不计入 12 个发布件。`transit-counts` 额外包含 `v4`、`v4-labels` 与受控的 `flows-v3-v4` 允许流向表，供离线跨版流转查询使用。
 
 ## 命令说明
 
@@ -53,6 +57,7 @@ datasets=3 versions=5 artifacts=9 verified=8 skipped=0 quarantined=1 failed=0 bl
 | `python -m releaseharbor demo --strict` | 结果非 `success` 时返回 1 |
 | `python -m releaseharbor collect --config ...` | 对已在配置 origin 上运行的门户执行采集 |
 | `python -m releaseharbor serve --config ... [--port N]` | 启动只读复核台，端口覆盖仍只绑定 127.0.0.1 |
+| `python -m releaseharbor transit --config ... --query query.json` | 离线跨版流转界限查询，打印两份业务合同 |
 
 `collect` 适用于测试或宿主程序自行启动 `PortalServer` 的场景；普通体验使用 `demo` 即可。
 
@@ -67,6 +72,9 @@ datasets=3 versions=5 artifacts=9 verified=8 skipped=0 quarantined=1 failed=0 bl
 | `reports/report.md` | 面向人工复核的摘要报告 |
 | `reports/manifest.csv` | 发布件级清单与校验结果 |
 | `reports/audit.jsonl` | 按 `seq` 排序的审计事件流 |
+| `reports/transit/transit.json` | 独立的流转界限结果（完整可行区间、见证、证据摘要） |
+| `reports/transit/transit.md` | 面向复核的流转界限与逐边可行分配 |
+| `var/transit-results/transit-<digest>.json` | 按输入摘要归档的流转结果；旧边版本结果可长期回读 |
 | `fixtures/golden/*` | 固定演示的 golden 报告与 golden 事件流 |
 
 SQLite 主要表：
@@ -97,6 +105,40 @@ SQLite 主要表：
 不跟随其他链接，不递归任意站点。`max_datasets`、`max_versions`、`max_artifacts`、`max_pages` 与通道白名单共同构成发现边界。
 
 下载器每次只发 GET/HEAD；有 `.part` 时发送 `Range: bytes=<offset>-`。只有服务端返回 206 且 `Content-Range` 起始位置匹配时才追加；服务端忽略 Range 返回 200 时从头覆盖。响应大小超过声明值或配置上限立即终止，并把超过声明大小的部分文件丢弃，避免污染后续续传。
+
+## 离线跨版流转界限
+
+`transit` 子命令只消费**已通过验收且磁盘复验一致**的合成 CSV，回答“旧区域到新区域的人流至少/至多多少”，并给出可独立核查的完整整数边分配见证。它只读台账与发布件，不修改任何发布件、运行或事件状态。
+
+查询文件字段：
+
+```json
+{
+  "dataset_id": "transit-counts",
+  "old_version": "v3",
+  "new_version": "v4",
+  "old_zone": "W1",
+  "new_zone": "N4",
+  "old_label_version": "v3-labels",
+  "new_label_version": "v4-labels",
+  "edge_tables": [{"version": "flows-v3-v4", "filename": "flow_edges.csv"}]
+}
+```
+
+- 客流 CSV 需 `station_code` 与 `weekday_boardings`；标签 CSV 需 `station_code` 与 `zone`；边表需 `from,to,min,max`（`min`/`max` 可省略为 0/无上界）。`SOURCE`、`SINK`（或 `@source`/`@exit`）只在边表显式声明时存在；无法解释的总量差会被拒绝，而不是被静默摊平。
+- 求解在**全部站点**上同时满足整数供给、需求、边下界/上界，允许一对多拆分与多对一合并；旧/新站点按版本各自建点，不按 `station_code` 合并。
+- 不可行时两份合同都返回 `unknown`，并附可核查的割/供需冲突（`cut_edges`、`new_station_shortfalls`、`old_station_shortfalls`、`unmet_demand`），绝不给出局部区域汇总。
+- 重复 `station_code`、缺失/冲突区域标签、未知节点、负容量、边版本早于旧版等情况都带 `role/filename/line` 定位并拒绝完整结果。
+- 任意发布件验收失败、磁盘摘要不一致或台账路径越界时，两份合同都只给 `unknown` 及原因；旧区域标签不会被套到新版上。
+
+两份业务使用合同（对同一输入同时给出完整可行区间与两份见证）：
+
+| 合同 | 语义 | A=7/B=3 → C=5/D=5 | 再加 `A->C` 下界 4 后 |
+|---|---|---:|---:|
+| `guaranteed_relocation` | 所有可行分配中东→西的**最小值**，可证明已发生的规模 | 2 | 2 |
+| `maximum_exposure` | 所有可行分配中的**最大值**，用于预留服务容量 | 5 | 3 |
+
+见证包含逐边 `flow` 及 `min/max`、逐站净流入与 `checks`；结果同时记录 `input_digest` 与每份证据的版本、大小、SHA-256。若只更换边表版本，只会产生新的界限结果：新的 `reports/transit/transit.json` 覆盖“最新”视图，而每份结果都会按 `input_digest` 归档到 `var/transit-results/`，旧结果仍可按其摘要回读。
 
 ## 安全边界
 
@@ -133,17 +175,26 @@ releaseharbor/
   collector.py      单发布件元数据 -> 下载 -> 验收流程
   pipeline.py       单次运行编排与 fatal 收尾
   reports.py        JSON/Markdown/CSV/JSONL 输出
+  transit.py        查询规格、区域方向与界限入口
+  transit_load.py   台账读取、磁盘复验、CSV 装载
+  transit_csv.py    客流/标签/边表的定位式严格解析
+  transit_model.py  解析与求解共享的数据类型
+  transit_flow.py   有界整数网络构建与界限入口
+  flow_solver.py    下界变换 + Dinic 可行性
+  flow_witness.py   残差负环优化与见证复核
+  transit_contracts.py 两份业务合同与结果信封
+  transit_report.py 独立流转界限报告
   console.py        只读回环复核台
   console_pages.py  无外部资源、全转义 HTML
-  cli.py            demo / collect / serve
+  cli.py            demo / collect / serve / transit
   workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
+tests/              62 个 unittest 用例（含流转界限合成测试）
 config/demo.json    固定时钟演示配置
 fixtures/portal.json 合成门户数据
 fixtures/golden/    golden 报告
 ```
 
-实现与测试合计 4340 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+实现与测试合计约 6900 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
 
 ## 合规声明
 

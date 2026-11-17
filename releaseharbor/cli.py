@@ -5,16 +5,19 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import __version__
 from .config import load_config
 from .console import ConsoleServer
-from .db import database_exists
+from .db import connect_readonly, database_exists
 from .errors import ReleaseHarborError
 from .fixture import load_portal_fixture
 from .pipeline import run_pipeline
 from .portal_server import PortalServer
+from .transit_report import write_transit_result
+from .transit import load_query_spec, query_bounds
 from .util import relative_posix
 
 
@@ -37,6 +40,20 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="start the read-only loopback review console")
     serve.add_argument("--config", default="config/demo.json")
     serve.add_argument("--port", type=int, default=None)
+    transit = subparsers.add_parser(
+        "transit", help="query offline cross-version transit bounds from accepted CSVs"
+    )
+    transit.add_argument("--config", default="config/demo.json")
+    transit.add_argument("--query", required=True, help="JSON query naming versions and zones")
+    transit.add_argument(
+        "--contract",
+        choices=("guaranteed", "maximum_exposure", "both"),
+        default="both",
+        help="which business contract to print",
+    )
+    transit.add_argument(
+        "--no-write", action="store_true", help="print only; do not write reports/transit"
+    )
     return parser
 
 
@@ -102,6 +119,39 @@ def _serve(args) -> int:
     return 0
 
 
+def _transit(args) -> int:
+    config = load_config(args.config)
+    if not database_exists(config.download.db_path):
+        raise ReleaseHarborError(
+            "ledger database does not exist; run the demo or collect command first"
+        )
+    spec = load_query_spec(Path(args.query))
+    connection = connect_readonly(config.download.db_path)
+    try:
+        result = query_bounds(config, connection, spec)
+    finally:
+        connection.close()
+    wanted = {"guaranteed", "maximum_exposure"} if args.contract == "both" else {args.contract}
+    labels = {"guaranteed": "guaranteed_relocation", "maximum_exposure": "maximum_exposure"}
+    for contract in result["contracts"]:
+        if contract["contract"] not in {labels[name] for name in wanted}:
+            continue
+        if contract["unknown"]:
+            reasons = "; ".join(item["detail"] for item in contract["unknown_reason"])
+            print(f"{contract['contract']}: unknown ({reasons})")
+        else:
+            print(
+                f"{contract['contract']}: {contract['value']} "
+                f"(feasible range {contract['minimum']}..{contract['maximum']})"
+            )
+    if not args.no_write:
+        paths = write_transit_result(config, result)
+        print(f"input_digest: {result['input_digest']}")
+        for key, value in paths.items():
+            print(f"{key}: {value}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -111,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
             return _collect(args)
         if args.command == "serve":
             return _serve(args)
+        if args.command == "transit":
+            return _transit(args)
         raise ReleaseHarborError(f"unknown command: {args.command}")
     except (ReleaseHarborError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

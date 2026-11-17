@@ -107,6 +107,51 @@
               "sha256": "f91fdfcae07925a71e1b79ad31a2192755e48068b0aa581adabe5bcf111bfd37"
             }
           ]
+        },
+        {
+          "id": "v4",
+          "label": "Version 4 counts",
+          "channel": "stable",
+          "released_at": "2025-06-12",
+          "notes": "Synthetic next release used for cross-version transit bounds.",
+          "artifacts": [
+            {
+              "name": "stations.csv",
+              "media_type": "text/csv",
+              "content": "station_code,station_name,weekday_boardings\nALPHA-01,Willow Gate,18360\nBETA-02,Copper Yard,12690\nGAMMA-03,North Loop,22070\nDELTA-04,Delta Junction,6200\n",
+              "sha256": "bef615fea06f1482955931745a6e1d29ff2c8441b19b91283f5080062e5b339d"
+            }
+          ]
+        },
+        {
+          "id": "v4-labels",
+          "label": "Version 4 label pack",
+          "channel": "stable",
+          "released_at": "2025-06-12",
+          "notes": "Zones for the next release; one station moved from N3 to N4.",
+          "artifacts": [
+            {
+              "name": "station_labels.csv",
+              "media_type": "text/csv",
+              "content": "station_code,short_label,zone\nALPHA-01,Willow,W1\nBETA-02,Copper,E2\nGAMMA-03,North,N4\nDELTA-04,Delta,N4\n",
+              "sha256": "642b4163bd52e6cb093d51089801e3fae41e2261d2fa232062ef6b19d8057fd4"
+            }
+          ]
+        },
+        {
+          "id": "flows-v3-v4",
+          "label": "Allowed v3 to v4 flows",
+          "channel": "stable",
+          "released_at": "2025-06-13",
+          "notes": "Declared possible station flows only; no unique assignment is given.",
+          "artifacts": [
+            {
+              "name": "flow_edges.csv",
+              "media_type": "text/csv",
+              "content": "from,to,min,max\nALPHA-01,ALPHA-01,0,99999\nALPHA-01,BETA-02,0,99999\nALPHA-01,GAMMA-03,0,99999\nALPHA-01,DELTA-04,0,99999\nBETA-02,ALPHA-01,0,99999\nBETA-02,BETA-02,0,99999\nBETA-02,GAMMA-03,0,99999\nBETA-02,DELTA-04,0,99999\nGAMMA-03,ALPHA-01,0,99999\nGAMMA-03,BETA-02,0,99999\nGAMMA-03,GAMMA-03,0,99999\nGAMMA-03,DELTA-04,0,99999\nSOURCE,DELTA-04,6145,6145\n",
+              "sha256": "81cb083ed8950fd94d79945fe6fa41ead8692412b43e737a95019f95597509a7"
+            }
+          ]
         }
       ]
     },

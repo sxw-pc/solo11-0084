@@ -4,8 +4,8 @@
 - Status: **partial**
 - Started: 2026-01-15T12:00:00Z
 - Finished: 2026-01-15T12:00:00Z
-- Datasets / versions / artifacts: 3 / 5 / 9
-- Verified / skipped / quarantined / failed: 8 / 0 / 1 / 0
+- Datasets / versions / artifacts: 3 / 8 / 12
+- Verified / skipped / quarantined / failed: 11 / 0 / 1 / 0
 - Blocked targets: 0
 
 > All names, payloads, checksums, and URLs in this report are synthetic fixtures.
@@ -43,6 +43,12 @@ Aurora Municipal Data Office | CC-BY-4.0 (synthetic fixture) | http://127.0.0.1:
 
 Rivergate Transit Analytics Unit | CC0-1.0 (synthetic fixture) | http://127.0.0.1:18765/datasets/transit-counts
 
+### Allowed v3 to v4 flows (`flows-v3-v4`, stable)
+
+| Artifact | Status | Expected bytes | Actual bytes | Attempts |
+|---|---|---:|---:|---:|
+| flow_edges.csv | verified | 347 | 347 | 1 |
+
 ### Version 3 counts (`v3`, stable)
 
 | Artifact | Status | Expected bytes | Actual bytes | Attempts |
@@ -55,5 +61,17 @@ Rivergate Transit Analytics Unit | CC0-1.0 (synthetic fixture) | http://127.0.0.
 | Artifact | Status | Expected bytes | Actual bytes | Attempts |
 |---|---|---:|---:|---:|
 | station_labels.csv | verified | 85 | 85 | 1 |
+
+### Version 4 counts (`v4`, stable)
+
+| Artifact | Status | Expected bytes | Actual bytes | Attempts |
+|---|---|---:|---:|---:|
+| stations.csv | verified | 152 | 152 | 1 |
+
+### Version 4 label pack (`v4-labels`, stable)
+
+| Artifact | Status | Expected bytes | Actual bytes | Attempts |
+|---|---|---:|---:|---:|
+| station_labels.csv | verified | 103 | 103 | 1 |
 
 End of deterministic fixture report.
