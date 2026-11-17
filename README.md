@@ -67,6 +67,7 @@ datasets=3 versions=5 artifacts=9 verified=8 skipped=0 quarantined=1 failed=0 bl
 | `reports/report.md` | 面向人工复核的摘要报告 |
 | `reports/manifest.csv` | 发布件级清单与校验结果 |
 | `reports/audit.jsonl` | 按 `seq` 排序的审计事件流 |
+| `reports/attribution.json` | 配置 `attribution` 后产出的发布者归属与来源集中度分析 |
 | `fixtures/golden/*` | 固定演示的 golden 报告与 golden 事件流 |
 
 SQLite 主要表：
@@ -74,9 +75,23 @@ SQLite 主要表：
 - `runs`：每次运行的 ID、状态、配置指纹与摘要。
 - `datasets` / `versions`：发现的发布主体与发布通道、版本、来源页。
 - `artifacts`：发布件身份、声明大小/SHA-256、远端元数据、本地路径、隔离路径、状态与尝试次数。
+- `dataset_publisher_snapshots`：按 `(dataset_id, run_id)` 保存当轮发布者原文快照；后续轮次改名不会回写历史。
 - `events`：`(run_id, seq)` 唯一的审计事件序列。
 
 发布件以 `(dataset_id, version_id, filename)` 幂等 upsert。重复运行不会产生重复发布件行；已验证文件会重新计算大小与 SHA-256，删改后会重新下载。
+
+## 发布者归属与来源集中度（可选）
+
+同一门户里多个数据集的 publisher 文本可能是简称、改名后的名称，或被不同机构在不同年份复用的展示名，直接按字符串分组会把同一来源拆开或把不同来源合并。配置可选的 `attribution` 段后，流水线在每轮结束时对**已验收发布件**做离线归属分析（全部使用虚构组织与本地注册表，不解释任何真实公司关系）：
+
+```json
+"attribution": {"registry": "fixtures/publishers.json"}
+```
+
+- 注册表按版次固化：展示名别名按有效日期给出候选法律组织 ID、互斥约束与组织到管理集团的隶属关系；一个展示名可在不同日期对应不同法律组织，同一法律组织也可改名。
+- 每个已验收发布件用其版本 `released_at`、**当轮发布者快照**（`dataset_publisher_snapshots`，不受后续 upsert 改名影响）与实际验收字节数确定来源权重；磁盘复验失配、来源缺失、日期非法或注册表无此名称的权重标为 `unknown`，集中度界限置空而不是给出伪精确总值。
+- 分析枚举全部全局可行指派（互斥约束生效），在**法律主体**与**集团管控**两种统计合同下分别给出各来源字节份额与 HHI 的最小/最大值及达到两端的完整指派见证；注册表改版只产生新分析，旧轮次仍可按其规则版次与来源文本回放。
+- 归属分析不改动任何字节验收、`verified` 状态或许可证结论。
 
 ## 状态语义
 
@@ -129,21 +144,23 @@ releaseharbor/
   discovery.py      有界数据集/版本/发布件发现
   downloader.py     断点续传、重试、字节上限与 .part 恢复
   verify.py         大小/SHA-256 验收与隔离移动
-  ledger.py         SQLite 幂等写入与事件序列
+  ledger.py         SQLite 幂等写入、事件序列与发布者快照
   collector.py      单发布件元数据 -> 下载 -> 验收流程
   pipeline.py       单次运行编排与 fatal 收尾
-  reports.py        JSON/Markdown/CSV/JSONL 输出
+  reports.py        JSON/Markdown/CSV/JSONL 输出与归属报告落盘
+  registry.py       虚构组织注册表：别名有效期、互斥约束、集团隶属
+  attribution.py    发布时点归属、全局可行指派枚举与 HHI 界限
   console.py        只读回环复核台
   console_pages.py  无外部资源、全转义 HTML
   cli.py            demo / collect / serve
-  workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
+  workspace.py      受保护输出目录的安全清理与布局校验
+tests/              45 个 unittest 用例
 config/demo.json    固定时钟演示配置
 fixtures/portal.json 合成门户数据
 fixtures/golden/    golden 报告
 ```
 
-实现与测试合计 4340 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
+实现与测试合计 5168 行 Python（以仓库文件 `wc -l` 计），所有文件均不超过 300 行；运行时与测试仅使用 Python 标准库。`report.json` 采用紧凑单行 JSON，便于把行数预算留给实现与测试；人类复核可阅读 `report.md`。
 
 ## 合规声明
 

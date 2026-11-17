@@ -250,6 +250,18 @@ def _manifest_csv(report: dict) -> str:
     return buffer.getvalue()
 
 
+def write_attribution_report(config, analysis: dict) -> str:
+    """Write the offline publisher-attribution analysis next to the run reports."""
+    directory = config.download.report_dir
+    ensure_directory(directory)
+    path = directory / "attribution.json"
+    atomic_write_text(
+        path,
+        json.dumps(analysis, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+    )
+    return relative_posix(config.root, path)
+
+
 def write_reports(connection: sqlite3.Connection, config, run_id: str) -> dict[str, str]:
     report = build_report(connection, run_id)
     directory = config.download.report_dir

@@ -97,7 +97,25 @@ class Ledger:
                 now,
             ),
         )
+        # Keep the publisher text exactly as this run saw it. Later upserts may
+        # overwrite datasets.publisher (a rename), but must never rewrite the
+        # release-time source text that attribution analysis replays from.
+        self.connection.execute(
+            "INSERT INTO dataset_publisher_snapshots(dataset_id, run_id, publisher, "
+            "recorded_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(dataset_id, run_id) DO UPDATE SET publisher=excluded.publisher, "
+            "recorded_at=excluded.recorded_at",
+            (dataset.dataset_id, run_id, dataset.publisher, now),
+        )
         self.connection.commit()
+
+    def publisher_snapshot(self, run_id: str, dataset_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT publisher FROM dataset_publisher_snapshots "
+            "WHERE run_id = ? AND dataset_id = ?",
+            (run_id, dataset_id),
+        ).fetchone()
+        return None if row is None else row["publisher"]
 
     def upsert_version(self, run_id: str, version: DiscoveredVersion, dataset_id: str) -> None:
         now = self.clock.now()

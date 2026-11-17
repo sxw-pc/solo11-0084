@@ -4,8 +4,42 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .errors import ConfigError
+
+if TYPE_CHECKING:
+    from .config import DownloadSettings
+
+
+def validate_layout(
+    source: Path, fixture: Path, download: DownloadSettings, registry: Path | None = None
+) -> None:
+    """Reject output layouts that would contain or overwrite input files."""
+    work = download.work_dir.resolve()
+    for path, label in (
+        (download.artifact_dir, "artifact_dir"),
+        (download.quarantine_dir, "quarantine_dir"),
+        (download.db_path, "db_path"),
+    ):
+        resolved = path.resolve()
+        if resolved == work or not resolved.is_relative_to(work):
+            raise ConfigError(f"download.{label} must live below download.work_dir")
+    protected = (source, fixture) if registry is None else (source, fixture, registry)
+    for output in (
+        download.work_dir,
+        download.artifact_dir,
+        download.quarantine_dir,
+        download.report_dir,
+        download.db_path,
+    ):
+        for item in protected:
+            resolved_output = output.resolve()
+            resolved_input = item.resolve()
+            if resolved_output == resolved_input or resolved_input.is_relative_to(
+                resolved_output
+            ):
+                raise ConfigError(f"generated output path would contain an input file: {output}")
 
 
 def _safe_output(path: Path, root: Path, protected: tuple[Path, ...]) -> None:

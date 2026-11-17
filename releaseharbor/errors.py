@@ -29,6 +29,10 @@ class DownloadError(ReleaseHarborError):
     """A transfer failed for a non-retryable protocol reason."""
 
 
+class AttributionError(ReleaseHarborError):
+    """The publisher attribution registry or its analysis inputs are invalid."""
+
+
 class IntegrityError(ReleaseHarborError):
     """A downloaded artifact failed size or digest acceptance."""
 

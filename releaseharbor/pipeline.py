@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .attribution import analyze_run
 from .clock import Clock
 from .collector import ArtifactProcessor
 from .db import connect
@@ -12,7 +13,8 @@ from .downloader import Downloader
 from .errors import ReleaseHarborError
 from .httpclient import SafeHttpClient
 from .ledger import Ledger
-from .reports import collect_counts, write_reports
+from .registry import load_registry
+from .reports import collect_counts, write_attribution_report, write_reports
 from .security import UrlPolicy
 from .workspace import reset_outputs
 
@@ -126,6 +128,10 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
         summary = collect_counts(connection, run_id)
         ledger.finish_run(run_id, status, summary)
         paths = write_reports(connection, config, run_id)
+        if config.attribution_registry is not None:
+            registry = load_registry(config.attribution_registry)
+            analysis = analyze_run(connection, run_id, registry, config.root)
+            paths["attribution_json"] = write_attribution_report(config, analysis)
         return RunOutcome(run_id, status, summary, paths, result.pages_fetched)
     except Exception as exc:
         detail = {"error": f"{type(exc).__name__}: {exc}"}

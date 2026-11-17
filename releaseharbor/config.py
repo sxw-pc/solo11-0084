@@ -12,6 +12,7 @@ from .clock import format_utc
 from .errors import ConfigError, SecurityBoundaryError
 from .security import UrlPolicy, require_loopback_bind
 from .util import canonical_json, ensure_directory, load_json_file, resolve_under, sha256_bytes
+from .workspace import validate_layout
 
 _CHANNEL = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}\Z")
 
@@ -60,6 +61,7 @@ class AppConfig:
     discovery: DiscoverySettings
     download: DownloadSettings
     console: ConsoleSettings
+    attribution_registry: Path | None
     clock_mode: str
     clock_fixed: str
     request_timeout: float
@@ -127,32 +129,6 @@ def _safe_path(root: Path, raw_value: str, label: str) -> Path:
         raise ConfigError(str(exc)) from exc
 
 
-def _validate_layout(source: Path, fixture: Path, download: DownloadSettings) -> None:
-    work = download.work_dir.resolve()
-    for path, label in (
-        (download.artifact_dir, "artifact_dir"),
-        (download.quarantine_dir, "quarantine_dir"),
-        (download.db_path, "db_path"),
-    ):
-        resolved = path.resolve()
-        if resolved == work or not resolved.is_relative_to(work):
-            raise ConfigError(f"download.{label} must live below download.work_dir")
-    for output in (
-        download.work_dir,
-        download.artifact_dir,
-        download.quarantine_dir,
-        download.report_dir,
-        download.db_path,
-    ):
-        for protected in (source, fixture):
-            resolved_output = output.resolve()
-            resolved_input = protected.resolve()
-            if resolved_output == resolved_input or resolved_input.is_relative_to(
-                resolved_output
-            ):
-                raise ConfigError(f"generated output path would contain an input file: {output}")
-
-
 def load_config(path_value: str | Path) -> AppConfig:
     path = Path(path_value).expanduser().resolve()
     try:
@@ -164,7 +140,7 @@ def load_config(path_value: str | Path) -> AppConfig:
         raw,
         "configuration",
         {"schema_version", "root", "portal", "discovery", "download", "security", "clock"},
-        {"console", "demo"},
+        {"console", "demo", "attribution"},
     )
     if raw["schema_version"] != 1:
         raise ConfigError("schema_version must be 1")
@@ -276,7 +252,15 @@ def load_config(path_value: str | Path) -> AppConfig:
     demo_raw = _object(raw.get("demo", {"reset_on_start": False}), "demo")
     _keys(demo_raw, "demo", {"reset_on_start"})
     reset = _boolean(demo_raw["reset_on_start"], "demo.reset_on_start")
-    _validate_layout(path, fixture, download)
+    attribution_registry = None
+    if "attribution" in raw:
+        section = _object(raw["attribution"], "attribution")
+        _keys(section, "attribution", {"registry"})
+        label = "attribution.registry"
+        attribution_registry = _safe_path(root, _string(section["registry"], label), label)
+        if not attribution_registry.is_file():
+            raise ConfigError(f"attribution registry does not exist: {attribution_registry}")
+    validate_layout(path, fixture, download, attribution_registry)
 
     return AppConfig(
         source_path=path,
@@ -293,6 +277,7 @@ def load_config(path_value: str | Path) -> AppConfig:
         ),
         download=download,
         console=console,
+        attribution_registry=attribution_registry,
         clock_mode=mode,
         clock_fixed=fixed,
         request_timeout=float(timeout_raw),

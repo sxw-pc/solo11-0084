@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS artifacts (
     UNIQUE(dataset_id, version_id, filename),
     FOREIGN KEY(dataset_id, version_id) REFERENCES versions(dataset_id, version_id)
 );
+CREATE TABLE IF NOT EXISTS dataset_publisher_snapshots (
+    dataset_id TEXT NOT NULL REFERENCES datasets(dataset_id),
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    publisher TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (dataset_id, run_id)
+);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -88,6 +95,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_versions_dataset ON versions(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_publisher_snapshots_run ON dataset_publisher_snapshots(run_id);
 """.strip()
 
 

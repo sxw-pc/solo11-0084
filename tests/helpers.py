@@ -67,6 +67,30 @@ def portal_for(config) -> PortalServer:
     return PortalServer(fixture, "127.0.0.1", int(config.portal.base_url.rsplit(":", 1)[1]))
 
 
+def registry_spec(orgs, aliases, groups=(), exclusions=(), version="reg-1") -> dict:
+    """Build a synthetic publisher-attribution registry document."""
+    return {
+        "schema_version": 1,
+        "registry_version": version,
+        "groups": [{"id": gid, "name": f"Group {gid}"} for gid in groups],
+        "organizations": [
+            {"id": oid, "legal_name": f"Legal {oid}", **({"group": grp} if grp else {})}
+            for oid, grp in orgs
+        ],
+        "aliases": [
+            {"display_name": name, "valid_from": start, "valid_to": end, "candidates": cands}
+            for name, start, end, cands in aliases
+        ],
+        "exclusions": [
+            {
+                "note": "synthetic mutual exclusion",
+                "literals": [{"display_name": name, "org_id": oid} for name, oid in pairs],
+            }
+            for pairs in exclusions
+        ],
+    }
+
+
 def ref_for(config, dataset: str, version: str, filename: str) -> ArtifactRef:
     fixture = load_portal_fixture(config.portal.fixture)
     ds = next(item for item in fixture.datasets if item.dataset_id == dataset)
