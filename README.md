@@ -102,8 +102,17 @@ SQLite 主要表：
 
 - 所有出站 URL 在**建立 socket 之前**由 `UrlPolicy` 校验：仅接受配置中的精确 origin，且 host 必须是 `127.0.0.1`、`localhost` 或 `::1`。
 - 外部主机、其他端口、HTTPS、userinfo、控制字符与管理边界之外的 URL 一律拒绝；被拒绝目标写入 `target.blocked` 审计事件。
-- mock 门户与复核台绑定地址都必须通过显式回环地址校验；不提供公网绑定开关。
-- 只实现 GET/HEAD。POST/PUT/DELETE/PATCH/OPTIONS 返回 405。
+- URL 文本、地址选择、真实 socket 对端三者必须指向同一回环判定：
+  - `SafeHttpClient` 先对目标做 origin 校验，再用 `LoopbackConnector.resolve` 得到数字地址候选，过滤掉所有非回环结果并审计 `target.resolution_filtered`；全部非回环时发出 `target.resolution_rejected` 并拒绝连接。
+  - 连接使用 `_PinnedHTTPConnection`：`http.client` 只看到选定的数字地址，socket 工厂被替换为 `LoopbackConnector.connect`，因此 `connect()` 不会二次解析主机名。连接后 `getpeername()` 必须与钉住地址（含端口）一致，否则断开并记录 `target.peer_mismatch`；连接失败记录 `target.connect_failed`，解析失败记录 `target.resolution_failed`。
+  - `Host` 请求头始终由已验证目标生成（`127.0.0.1:<port>` 或 `[::1]:<port>`），与门户配置的合法 host/port 一致；门户对不匹配的 Host 返回 421。
+- 两条地址合同（`portal.address_contract`）：
+  - `literal`（默认）：配置与请求 URL 必须使用数字回环 IP（`127.0.0.1`、`::1`）并保持确切 origin/端口；`localhost` 直接拒绝并记录理由。
+  - `pinned_name`：允许配置为 `localhost`，但只从解析结果中选一个数字回环候选建连并核对 peer，`http.client` 不会重新解析主机名。
+  - 对同一绑定在 `127.0.0.1`、配置 URL 使用 `localhost` 的门户：`literal` 合同拒绝采集请求，`pinned_name` 合同成功采集；恶意解析序列下两者都不会连到外部地址。
+  - 示例：`"portal": {"fixture": "...", "bind_host": "localhost", "base_url": "http://localhost:18765", "address_contract": "pinned_name"}`。
+- mock 门户与复核台绑定地址都必须通过显式回环地址校验；`localhost` 绑定先解析为数字回环地址再 bind，不提供公网绑定开关。
+- 只实现 GET/HEAD。POST/PUT/DELETE/PATCH/OPTIONS 返回 405。不跟随重定向：重定向目标与任何其他来源一样在建立连接前被 origin 校验拒绝。
 - 发布件文件名、数据集 ID、版本 ID 都经过白名单清洗，拒绝路径分隔符、`..`、保留设备名与 Windows 尾随点/空格。
 - 所有输出路径在配置加载时解析并校验位于项目根目录内；配置、fixture、目标目录之间的覆盖关系被拒绝。
 - SQLite 复核台以只读 URI 打开；页面全部服务端转义，不加载外部脚本、样式或字体，并设置 CSP、nosniff 与 `Referrer-Policy: no-referrer`。
@@ -120,8 +129,9 @@ SQLite 主要表：
 ```text
 releaseharbor/
   config.py         严格配置/路径/输出布局校验
-  security.py       精确回环 origin 与绑定地址策略
-  httpclient.py     仅 GET/HEAD 的安全 HTTP 客户端
+  addresses.py      数字回环候选、resolver 过滤、钉住地址建连与 peer 核对
+  security.py       精确回环 origin、地址合同与 Host 头规则
+  httpclient.py     仅 GET/HEAD、钉住数字回环 peer 的安全 HTTP 客户端
   fixture.py        合成门户 fixture 与内容生成
   portal_pages.py   确定性 HTML 页面
   portal_server.py  本地 mock 门户、HEAD、Range、临时故障
@@ -137,7 +147,7 @@ releaseharbor/
   console_pages.py  无外部资源、全转义 HTML
   cli.py            demo / collect / serve
   workspace.py      受保护输出目录的安全清理
-tests/              37 个 unittest 用例
+tests/              64 个 unittest 用例
 config/demo.json    固定时钟演示配置
 fixtures/portal.json 合成门户数据
 fixtures/golden/    golden 报告

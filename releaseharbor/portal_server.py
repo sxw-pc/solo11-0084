@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlsplit
 from .errors import SecurityBoundaryError
 from .fixture import DatasetFixture, PortalFixture, VersionFixture
 from .portal_pages import render_dataset, render_home, render_version
-from .security import is_loopback_host, require_loopback_bind
+from .security import host_header_allowed, require_loopback_bind, resolve_bind_address
 
 
 class _PortalHTTPServer(HTTPServer):
@@ -18,6 +18,8 @@ class _PortalHTTPServer(HTTPServer):
 
     def __init__(self, address, handler, fixture: PortalFixture) -> None:
         self.fixture = fixture
+        self.allowed_hosts: frozenset[str] = frozenset()
+        self.allowed_ports: frozenset[int] = frozenset()
         self.transient_budget = {
             (dataset.dataset_id, version.version_id, artifact.name): artifact.transient_failures
             for dataset in fixture.datasets
@@ -73,6 +75,13 @@ class _Handler(BaseHTTPRequestHandler):
     @property
     def fixture(self) -> PortalFixture:
         return self.server.fixture  # type: ignore[attr-defined]
+
+    def _host_allowed(self, raw_host: str) -> bool:
+        return host_header_allowed(
+            raw_host,
+            self.server.allowed_hosts,  # type: ignore[attr-defined]
+            self.server.allowed_ports,  # type: ignore[attr-defined]
+        )
 
     def _send(
         self,
@@ -140,8 +149,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, *, head: bool) -> None:
         host = self.headers.get("Host", "")
-        host_name = host.split(":", 1)[0].strip("[]").lower()
-        if host_name and not is_loopback_host(host_name):
+        if not self._host_allowed(host):
             self._error(421, "Only loopback Host headers are accepted.")
             return
         segments = self._segments()
@@ -240,9 +248,11 @@ class PortalServer:
     def __init__(
         self, fixture: PortalFixture, bind_host: str = "127.0.0.1", port: int = 0
     ) -> None:
-        host = require_loopback_bind(bind_host)
+        configured = require_loopback_bind(bind_host)
         if not 0 <= port <= 65535:
             raise SecurityBoundaryError("portal port is invalid")
+        self.configured_host = configured
+        host = resolve_bind_address(configured)
         server_class = _PortalV6HTTPServer if ":" in host else _PortalHTTPServer
         try:
             self._server = server_class((host, port), _Handler, fixture)
@@ -251,6 +261,8 @@ class PortalServer:
         self._thread: threading.Thread | None = None
         self.host = host
         self.port = self._server.server_address[1]
+        self._server.allowed_hosts = frozenset({configured, host})
+        self._server.allowed_ports = frozenset({self.port})
 
     @property
     def base_url(self) -> str:

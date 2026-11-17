@@ -65,7 +65,9 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
         def blocked(code: str, subject: str, detail: dict) -> None:
             ledger.record_event(run_id, code, subject, detail, "warning")
 
-        policy = UrlPolicy(config.portal.base_url)
+        policy = UrlPolicy(
+            config.portal.base_url, contract=config.portal.address_contract
+        )
         client = SafeHttpClient(
             policy, timeout=config.request_timeout, on_blocked=blocked
         )

@@ -10,10 +10,11 @@ from urllib.parse import urlsplit
 
 from .clock import format_utc
 from .errors import ConfigError, SecurityBoundaryError
-from .security import UrlPolicy, require_loopback_bind
+from .security import AddressContract, UrlPolicy, require_loopback_bind
 from .util import canonical_json, ensure_directory, load_json_file, resolve_under, sha256_bytes
 
 _CHANNEL = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}\Z")
+_CONTRACTS = frozenset({AddressContract.LITERAL.value, AddressContract.PINNED_NAME.value})
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class PortalSettings:
     fixture: Path
     bind_host: str
     base_url: str
+    address_contract: AddressContract = AddressContract.LITERAL
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,40 @@ def _safe_path(root: Path, raw_value: str, label: str) -> Path:
         raise ConfigError(str(exc)) from exc
 
 
+def _load_portal(raw: dict, root: Path) -> tuple[Path, str, str, AddressContract]:
+    """Validate the portal origin, bind host, and address contract together."""
+    portal_raw = _object(raw["portal"], "portal")
+    _keys(portal_raw, "portal", {"fixture", "base_url"}, {"bind_host", "address_contract"})
+    fixture = _safe_path(root, _string(portal_raw["fixture"], "portal.fixture"), "portal.fixture")
+    if not fixture.is_file():
+        raise ConfigError(f"portal fixture does not exist: {fixture}")
+    base_url = _string(portal_raw["base_url"], "portal.base_url").rstrip("/")
+    contract_raw = portal_raw.get("address_contract", AddressContract.LITERAL.value)
+    if not isinstance(contract_raw, str) or contract_raw not in _CONTRACTS:
+        raise ConfigError("portal.address_contract must be 'literal' or 'pinned_name'")
+    contract = AddressContract(contract_raw)
+    try:
+        parsed_base = urlsplit(base_url)
+        UrlPolicy(base_url, contract=contract)
+        if parsed_base.path not in {"", "/"} or parsed_base.query or parsed_base.fragment:
+            raise SecurityBoundaryError(
+                "portal.base_url must be an origin without path, query, or fragment"
+            )
+    except (ValueError, SecurityBoundaryError) as exc:
+        raise ConfigError(f"invalid portal.base_url: {exc}") from exc
+    try:
+        default_bind = parsed_base.hostname or ""
+        bind_host = require_loopback_bind(
+            _string(portal_raw.get("bind_host", default_bind), "portal.bind_host")
+        )
+        if contract is AddressContract.LITERAL and bind_host == "localhost":
+            raise SecurityBoundaryError(
+                "the literal address contract does not allow the 'localhost' bind host"
+            )
+    except SecurityBoundaryError as exc:
+        raise ConfigError(f"invalid portal.bind_host: {exc}") from exc
+    return fixture, bind_host, base_url, contract
+
 def _validate_layout(source: Path, fixture: Path, download: DownloadSettings) -> None:
     work = download.work_dir.resolve()
     for path, label in (
@@ -160,12 +196,9 @@ def load_config(path_value: str | Path) -> AppConfig:
     except (OSError, ValueError) as exc:
         raise ConfigError(f"cannot read configuration {path}: {exc}") from exc
     raw = _object(raw, "configuration")
-    _keys(
-        raw,
-        "configuration",
-        {"schema_version", "root", "portal", "discovery", "download", "security", "clock"},
-        {"console", "demo"},
-    )
+    _keys(raw, "configuration",
+          {"schema_version", "root", "portal", "discovery", "download", "security", "clock"},
+          {"console", "demo"})
     if raw["schema_version"] != 1:
         raise ConfigError("schema_version must be 1")
 
@@ -174,33 +207,11 @@ def load_config(path_value: str | Path) -> AppConfig:
     if not root.is_dir():
         raise ConfigError(f"project root does not exist: {root}")
 
-    portal_raw = _object(raw["portal"], "portal")
-    _keys(portal_raw, "portal", {"fixture", "base_url"}, {"bind_host"})
-    fixture = _safe_path(root, _string(portal_raw["fixture"], "portal.fixture"), "portal.fixture")
-    if not fixture.is_file():
-        raise ConfigError(f"portal fixture does not exist: {fixture}")
-    base_url = _string(portal_raw["base_url"], "portal.base_url").rstrip("/")
-    try:
-        parsed_base = urlsplit(base_url)
-        UrlPolicy(base_url)
-    except (ValueError, SecurityBoundaryError) as exc:
-        raise ConfigError(f"invalid portal.base_url: {exc}") from exc
-    if parsed_base.path not in {"", "/"} or parsed_base.query or parsed_base.fragment:
-        raise ConfigError("portal.base_url must be an origin without path, query, or fragment")
-    default_bind = parsed_base.hostname or ""
-    try:
-        bind_host = require_loopback_bind(
-            _string(portal_raw.get("bind_host", default_bind), "portal.bind_host")
-        )
-    except SecurityBoundaryError as exc:
-        raise ConfigError(str(exc)) from exc
+    fixture, bind_host, base_url, contract = _load_portal(raw, root)
 
     discovery_raw = _object(raw["discovery"], "discovery")
-    _keys(
-        discovery_raw,
-        "discovery",
-        {"max_datasets", "max_versions", "max_artifacts", "max_pages", "channels"},
-    )
+    _keys(discovery_raw, "discovery",
+          {"max_datasets", "max_versions", "max_artifacts", "max_pages", "channels"})
     channels_raw = discovery_raw["channels"]
     if not isinstance(channels_raw, list) or not 1 <= len(channels_raw) <= 10:
         raise ConfigError("discovery.channels must be a non-empty list")
@@ -212,21 +223,10 @@ def load_config(path_value: str | Path) -> AppConfig:
             channels.append(channel)
 
     download_raw = _object(raw["download"], "download")
-    _keys(
-        download_raw,
-        "download",
-        {
-            "work_dir",
-            "artifact_dir",
-            "quarantine_dir",
-            "db_path",
-            "report_dir",
-            "retries",
-            "retry_backoff_ms",
-            "chunk_size",
-            "max_artifact_bytes",
-        },
-    )
+    _keys(download_raw, "download", {
+        "work_dir", "artifact_dir", "quarantine_dir", "db_path", "report_dir",
+        "retries", "retry_backoff_ms", "chunk_size", "max_artifact_bytes",
+    })
     download = DownloadSettings(
         work_dir=_safe_path(root, _string(download_raw["work_dir"], "download.work_dir"), "work_dir"),
         artifact_dir=_safe_path(
@@ -283,7 +283,7 @@ def load_config(path_value: str | Path) -> AppConfig:
         root=root,
         raw=raw,
         fingerprint=sha256_bytes(canonical_json(raw).encode("utf-8"))[:16],
-        portal=PortalSettings(fixture, bind_host, base_url),
+        portal=PortalSettings(fixture, bind_host, base_url, contract),
         discovery=DiscoverySettings(
             _integer(discovery_raw["max_datasets"], "discovery.max_datasets", 1, 200),
             _integer(discovery_raw["max_versions"], "discovery.max_versions", 1, 100),

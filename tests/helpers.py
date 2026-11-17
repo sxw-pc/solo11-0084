@@ -13,6 +13,30 @@ from releaseharbor.portal_server import PortalServer
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "fixtures" / "portal.json"
+EXTERNAL_V4 = "192.0.2.55"
+EXTERNAL_V6 = "2001:db8::55"
+
+
+def addr_infos(port: int, *addresses: str) -> list[tuple]:
+    """Build getaddrinfo-shaped results for the given numeric addresses."""
+    results = []
+    for address in addresses:
+        if ":" in address:
+            results.append(
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, port, 0, 0))
+            )
+        else:
+            results.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port)))
+    return results
+
+
+def event_sink() -> tuple[list[dict], "callable"]:
+    events: list[dict] = []
+
+    def sink(code: str, subject: str, detail: dict) -> None:
+        events.append({"code": code, "subject": subject, "detail": detail})
+
+    return events, sink
 
 
 def free_port() -> int:
@@ -21,18 +45,29 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def write_project(root: Path, port: int, *, retries: int = 2, channels=None) -> Path:
+def write_project(
+    root: Path,
+    port: int,
+    *,
+    retries: int = 2,
+    channels=None,
+    host: str = "127.0.0.1",
+    contract: str | None = None,
+) -> Path:
     fixture = root / "fixtures" / "portal.json"
     fixture.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(FIXTURE, fixture)
+    portal = {
+        "fixture": "fixtures/portal.json",
+        "bind_host": host,
+        "base_url": f"http://{host}:{port}",
+    }
+    if contract is not None:
+        portal["address_contract"] = contract
     config = {
         "schema_version": 1,
         "root": "..",
-        "portal": {
-            "fixture": "fixtures/portal.json",
-            "bind_host": "127.0.0.1",
-            "base_url": f"http://127.0.0.1:{port}",
-        },
+        "portal": portal,
         "discovery": {
             "max_datasets": 20,
             "max_versions": 10,
@@ -64,7 +99,8 @@ def write_project(root: Path, port: int, *, retries: int = 2, channels=None) -> 
 
 def portal_for(config) -> PortalServer:
     fixture = load_portal_fixture(config.portal.fixture)
-    return PortalServer(fixture, "127.0.0.1", int(config.portal.base_url.rsplit(":", 1)[1]))
+    port = int(config.portal.base_url.rsplit(":", 1)[1])
+    return PortalServer(fixture, config.portal.bind_host, port)
 
 
 def ref_for(config, dataset: str, version: str, filename: str) -> ArtifactRef:
