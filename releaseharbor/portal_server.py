@@ -214,24 +214,30 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         range_header = self.headers.get("Range")
+        body_source = (
+            artifact.range_content if artifact.range_content is not None else artifact.content
+        )
         if range_header:
-            parsed = _parse_range(range_header, size)
+            parsed = _parse_range(range_header, len(body_source))
             if parsed is None:
                 self.send_response(416)
-                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Range", f"bytes */{len(body_source)}")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             start, end = parsed
-            body = artifact.content[start : end + 1]
+            body = body_source[start : end + 1]
+            if artifact.range_extra_bytes:
+                body = body + b"X" * artifact.range_extra_bytes
+            total = len(body_source) + artifact.range_total_delta
             self._send(
                 206,
                 body,
                 artifact.media_type,
-                {**common, "Content-Range": f"bytes {start}-{end}/{size}"},
+                {**common, "Content-Range": f"bytes {start}-{end}/{total}"},
             )
             return
-        self._send(200, artifact.content, artifact.media_type, common)
+        self._send(200, body_source, artifact.media_type, common)
 
 
 class PortalServer:

@@ -64,8 +64,8 @@ def collect_counts(connection: sqlite3.Connection, run_id: str) -> dict:
     }
 
 
-def _artifact_dict(row: sqlite3.Row) -> dict:
-    return {
+def _artifact_dict(row: sqlite3.Row, chunks: list[dict] | None = None) -> dict:
+    result = {
         "uid": row["artifact_uid"],
         "filename": row["filename"],
         "media_type": row["media_type"],
@@ -88,6 +88,26 @@ def _artifact_dict(row: sqlite3.Row) -> dict:
             else {"code": row["error_code"], "detail": row["error_detail"]}
         ),
     }
+    if chunks:
+        result["chunks"] = chunks
+    return result
+
+
+def _chunk_map(connection: sqlite3.Connection) -> dict[str, list[dict]]:
+    rows = connection.execute(
+        "SELECT artifact_uid, chunk_index, chunk_sha256, status FROM artifact_chunks "
+        "ORDER BY artifact_uid, chunk_index"
+    ).fetchall()
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["artifact_uid"], []).append(
+            {
+                "index": row["chunk_index"],
+                "sha256": row["chunk_sha256"],
+                "status": row["status"],
+            }
+        )
+    return grouped
 
 
 def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
@@ -115,9 +135,10 @@ def build_report(connection: sqlite3.Connection, run_id: str) -> dict:
     if stored_summary:
         summary = stored_summary
     by_version: dict[tuple[str, str], list[dict]] = {}
+    chunk_map = _chunk_map(connection)
     for artifact in artifacts:
         by_version.setdefault((artifact["dataset_id"], artifact["version_id"]), []).append(
-            _artifact_dict(artifact)
+            _artifact_dict(artifact, chunk_map.get(artifact["artifact_uid"]))
         )
     by_dataset: dict[str, list[dict]] = {}
     for version in versions:

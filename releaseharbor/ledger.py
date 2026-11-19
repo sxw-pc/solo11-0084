@@ -174,6 +174,26 @@ class Ledger:
         )
         self.connection.commit()
 
+    def record_chunk_state(
+        self, artifact_uid: str, run_id: str, chunk_index: int, digest: str, status: str
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO artifact_chunks(artifact_uid, chunk_index, chunk_sha256, status, "
+            "run_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(artifact_uid, chunk_index) DO UPDATE SET "
+            "chunk_sha256=excluded.chunk_sha256, status=excluded.status, "
+            "run_id=excluded.run_id, updated_at=excluded.updated_at",
+            (artifact_uid, chunk_index, digest, status, run_id, self.clock.now()),
+        )
+        self.connection.commit()
+
+    def chunk_states(self, artifact_uid: str) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT chunk_index, chunk_sha256, status FROM artifact_chunks "
+            "WHERE artifact_uid = ? ORDER BY chunk_index",
+            (artifact_uid,),
+        ).fetchall()
+
     def artifact_events(self, run_id: str) -> list[dict]:
         rows = self.connection.execute(
             "SELECT seq, ts, level, code, subject, detail_json FROM events "

@@ -29,6 +29,11 @@ class ArtifactFixture:
     declared_size: int
     declared_sha256: str
     transient_failures: int
+    chunk_size: int | None
+    declared_chunk_sha256: tuple[str, ...]
+    range_extra_bytes: int
+    range_total_delta: int
+    range_content: bytes | None
 
 
 @dataclass(frozen=True)
@@ -109,12 +114,65 @@ def _date_text(value, label: str) -> str:
     return value
 
 
+def _chunk_manifest(raw: dict, label: str, content: bytes) -> tuple[int | None, tuple[str, ...]]:
+    chunk_size = raw.get("chunk_size")
+    if chunk_size is None:
+        if "chunk_sha256" in raw:
+            raise FixtureError(f"{label}.chunk_sha256 requires chunk_size")
+        return None, ()
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or not 1 <= chunk_size <= 8_388_608:
+        raise FixtureError(f"{label}.chunk_size is invalid")
+    count = len(content) // chunk_size + (1 if len(content) % chunk_size else 0)
+    if "chunk_sha256" in raw:
+        items = raw["chunk_sha256"]
+        if not isinstance(items, list):
+            raise FixtureError(f"{label}.chunk_sha256 must be a list")
+        try:
+            declared = tuple(normalize_sha256(item) for item in items)
+        except ValueError as exc:
+            raise FixtureError(f"{label}.chunk_sha256 is invalid") from exc
+        if len(declared) != count:
+            raise FixtureError(f"{label}.chunk_sha256 count does not match content")
+        return chunk_size, declared
+    digests = tuple(
+        sha256_bytes(content[index * chunk_size : (index + 1) * chunk_size])
+        for index in range(count)
+    )
+    return chunk_size, digests
+
+
+def _range_faults(raw: dict, label: str) -> tuple[int, int, bytes | None]:
+    extra = raw.get("range_extra_bytes", 0)
+    if isinstance(extra, bool) or not isinstance(extra, int) or not 0 <= extra <= 16:
+        raise FixtureError(f"{label}.range_extra_bytes is invalid")
+    delta = raw.get("range_total_delta", 0)
+    if isinstance(delta, bool) or not isinstance(delta, int) or not -16 <= delta <= 16:
+        raise FixtureError(f"{label}.range_total_delta is invalid")
+    swapped_raw = raw.get("range_content")
+    swapped = None
+    if swapped_raw is not None:
+        if not isinstance(swapped_raw, str):
+            raise FixtureError(f"{label}.range_content must be a string")
+        swapped = swapped_raw.encode("utf-8")
+        if len(swapped) > 65_536:
+            raise FixtureError(f"{label}.range_content is too large for the fixture")
+    return extra, delta, swapped
+
+
 def _artifact(raw, label: str) -> ArtifactFixture:
     _keys(
         raw,
         label,
         {"name", "media_type", "content", "sha256"},
-        {"declared_size", "transient_failures"},
+        {
+            "declared_size",
+            "transient_failures",
+            "chunk_size",
+            "chunk_sha256",
+            "range_extra_bytes",
+            "range_total_delta",
+            "range_content",
+        },
     )
     try:
         name = safe_filename(raw["name"])
@@ -139,6 +197,8 @@ def _artifact(raw, label: str) -> ArtifactFixture:
     failures = raw.get("transient_failures", 0)
     if isinstance(failures, bool) or not isinstance(failures, int) or not 0 <= failures <= 5:
         raise FixtureError(f"{label}.transient_failures is invalid")
+    chunk_size, chunk_digests = _chunk_manifest(raw, label, content)
+    extra, delta, swapped = _range_faults(raw, label)
     return ArtifactFixture(
         name=name,
         media_type=media_type,
@@ -148,6 +208,11 @@ def _artifact(raw, label: str) -> ArtifactFixture:
         declared_size=size,
         declared_sha256=declared_sha,
         transient_failures=failures,
+        chunk_size=chunk_size,
+        declared_chunk_sha256=chunk_digests,
+        range_extra_bytes=extra,
+        range_total_delta=delta,
+        range_content=swapped,
     )
 
 

@@ -82,18 +82,39 @@ def render_version(
     dataset: DatasetFixture, version: VersionFixture, portal: PortalFixture
 ) -> str:
     rows = []
+    has_chunks = any(artifact.chunk_size is not None for artifact in version.artifacts)
     for artifact in version.artifacts:
         href = f"/files/{dataset.dataset_id}/{version.version_id}/{artifact.name}"
+        chunk_attrs = ""
+        chunk_cell = ""
+        if artifact.chunk_size is not None:
+            joined = ",".join(artifact.declared_chunk_sha256)
+            chunk_attrs = (
+                f' data-chunk-size="{artifact.chunk_size}"'
+                f' data-chunk-sha256="{escape(joined)}"'
+            )
+            if has_chunks:
+                chunk_cell = (
+                    f"<td>{len(artifact.declared_chunk_sha256)} x "
+                    f"{artifact.chunk_size} bytes</td>"
+                )
+        elif has_chunks:
+            chunk_cell = "<td>-</td>"
         rows.append(
             '<tr><td><a class="artifact-link" href="'
             + escape(href)
             + f'" data-filename="{escape(artifact.name)}" '
             + f'data-size="{artifact.declared_size}" '
             + f'data-sha256="{escape(artifact.declared_sha256)}" '
-            + f'data-media-type="{escape(artifact.media_type)}">{escape(artifact.name)}</a></td>'
+            + f'data-media-type="{escape(artifact.media_type)}"'
+            + chunk_attrs
+            + f">{escape(artifact.name)}</a></td>"
             + f"<td>{escape(artifact.media_type)}</td><td>{artifact.declared_size}</td>"
-            + f"<td><code>{escape(artifact.declared_sha256)}</code></td></tr>"
+            + f"<td><code>{escape(artifact.declared_sha256)}</code></td>"
+            + chunk_cell
+            + "</tr>"
         )
+    chunk_header = "<th>Chunk manifest</th>" if has_chunks else ""
     body = (
         f'<main data-page="version" data-dataset-id="{escape(dataset.dataset_id)}" '
         f'data-version-id="{escape(version.version_id)}" '
@@ -104,7 +125,7 @@ def render_version(
         f'<p class="muted">Channel: {escape(version.channel)} | Released: '
         f"{escape(version.released_at)}</p><p>{escape(version.notes)}</p>"
         "<h2>Release artifacts</h2><table><thead><tr><th>File</th><th>Media type</th>"
-        "<th>Declared bytes</th><th>Declared SHA-256</th></tr></thead><tbody>"
+        f"<th>Declared bytes</th><th>Declared SHA-256</th>{chunk_header}</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></main>"
     )

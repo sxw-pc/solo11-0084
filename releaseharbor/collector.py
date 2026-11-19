@@ -202,6 +202,9 @@ class ArtifactProcessor:
                     "resumed_from": result.resumed_from,
                 }
             )
+            if result.chunks_repaired or result.recovery_bytes:
+                payload["chunks_repaired"] = result.chunks_repaired
+                payload["recovery_bytes"] = result.recovery_bytes
             self._event("artifact.verified", ref, payload)
             return "verified"
 

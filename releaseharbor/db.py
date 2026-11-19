@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS artifacts (
     UNIQUE(dataset_id, version_id, filename),
     FOREIGN KEY(dataset_id, version_id) REFERENCES versions(dataset_id, version_id)
 );
+CREATE TABLE IF NOT EXISTS artifact_chunks (
+    artifact_uid TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (artifact_uid, chunk_index)
+);
 CREATE TABLE IF NOT EXISTS events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES runs(run_id),

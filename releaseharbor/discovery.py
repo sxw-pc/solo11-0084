@@ -7,14 +7,16 @@ from dataclasses import dataclass, field
 from typing import Callable
 from urllib.parse import urldefrag, urljoin
 
+from .artifactmeta import parse_artifact_attrs
 from .errors import DiscoveryError, SecurityBoundaryError, TransportError
 from .htmlparse import has_class, parse_portal_html
 from .httpclient import SafeHttpClient
 from .security import ValidatedTarget
-from .util import is_sha256, normalize_sha256, safe_filename, safe_segment, stable_id
+from .util import safe_segment, stable_id
 
 EventSink = Callable[[str, str, dict], None]
-_MEDIA_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
+
+
 @dataclass(frozen=True)
 class ArtifactRef:
     dataset_id: str
@@ -28,6 +30,8 @@ class ArtifactRef:
     media_type: str
     expected_size: int
     expected_sha256: str
+    chunk_size: int | None = None
+    chunk_sha256: tuple[str, ...] = ()
 
     @property
     def artifact_uid(self) -> str:
@@ -232,7 +236,7 @@ class Discovery:
             ordered = ordered[: self.config.discovery.max_artifacts]
         seen_names: set[str] = set()
         for target in ordered:
-            attributes = self._artifact_attrs(parsed, target.url, page_url)
+            attributes = parse_artifact_attrs(parsed, target.url, page_url, self._issue)
             if attributes is None:
                 continue
             filename = attributes["filename"]
@@ -252,47 +256,11 @@ class Discovery:
                     media_type=attributes["media_type"],
                     expected_size=attributes["size"],
                     expected_sha256=attributes["sha256"],
+                    chunk_size=attributes["chunk_size"],
+                    chunk_sha256=attributes["chunk_sha256"],
                 )
             )
         version.artifacts.sort(key=lambda item: item.filename)
         if not version.artifacts:
             raise DiscoveryError("version has no valid artifact metadata")
         return version
-
-    def _artifact_attrs(self, parsed, target_url: str, page_url: str) -> dict | None:
-        for anchor in parsed.anchors:
-            if not has_class(anchor.attrs, "artifact-link"):
-                continue
-            resolved, _ = urldefrag(urljoin(page_url, anchor.attrs.get("href", "")))
-            if resolved != target_url:
-                continue
-            name_raw = anchor.attrs.get("data-filename", "")
-            try:
-                name = safe_filename(name_raw)
-            except SecurityBoundaryError as exc:
-                self._issue("artifact.metadata_invalid", name_raw, {"reason": str(exc)})
-                return None
-            sha = anchor.attrs.get("data-sha256", "")
-            if not is_sha256(sha):
-                self._issue("artifact.metadata_invalid", name, {"reason": "invalid sha256"})
-                return None
-            size_raw = anchor.attrs.get("data-size", "")
-            try:
-                size = int(size_raw)
-            except ValueError:
-                self._issue("artifact.metadata_invalid", name, {"reason": "invalid size"})
-                return None
-            if size < 0 or size > 52_428_800:
-                self._issue("artifact.metadata_invalid", name, {"reason": "size out of range"})
-                return None
-            media_type = anchor.attrs.get("data-media-type", "")
-            if not _MEDIA_TYPE.fullmatch(media_type):
-                self._issue("artifact.metadata_invalid", name, {"reason": "invalid media type"})
-                return None
-            return {
-                "filename": name,
-                "sha256": normalize_sha256(sha),
-                "size": size,
-                "media_type": media_type,
-            }
-        return None

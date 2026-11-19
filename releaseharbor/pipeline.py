@@ -87,7 +87,12 @@ def run_pipeline(config, *, reset: bool = False) -> RunOutcome:
         if artifact_count == 0:
             raise DiscoveryError("discovery returned no release artifacts")
 
-        downloader = Downloader(config, client, clock, on_event=audit)
+        def chunk_state(artifact_uid: str, index: int, digest: str, status: str) -> None:
+            ledger.record_chunk_state(artifact_uid, run_id, index, digest, status)
+
+        downloader = Downloader(
+            config, client, clock, on_event=audit, on_chunk_state=chunk_state
+        )
         processor = ArtifactProcessor(config, client, ledger, downloader, run_id)
         for dataset in result.datasets:
             for version in dataset.versions:

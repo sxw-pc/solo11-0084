@@ -43,6 +43,9 @@ class DownloadSettings:
     retry_backoff_ms: int
     chunk_size: int
     max_artifact_bytes: int
+    recovery_contract: str
+    chunk_retries: int
+    max_recovery_bytes: int
 
 
 @dataclass(frozen=True)
@@ -215,37 +218,33 @@ def load_config(path_value: str | Path) -> AppConfig:
     _keys(
         download_raw,
         "download",
-        {
-            "work_dir",
-            "artifact_dir",
-            "quarantine_dir",
-            "db_path",
-            "report_dir",
-            "retries",
-            "retry_backoff_ms",
-            "chunk_size",
-            "max_artifact_bytes",
-        },
+        {"work_dir", "artifact_dir", "quarantine_dir", "db_path", "report_dir", "retries",
+         "retry_backoff_ms", "chunk_size", "max_artifact_bytes"},
+        {"recovery_contract", "chunk_retries", "max_recovery_bytes"},
     )
+    max_artifact = _integer(
+        download_raw["max_artifact_bytes"], "download.max_artifact_bytes", 1, 52_428_800
+    )
+    contract = download_raw.get("recovery_contract", "repair")
+    if contract not in {"conservative", "repair"}:
+        raise ConfigError("download.recovery_contract must be 'conservative' or 'repair'")
     download = DownloadSettings(
         work_dir=_safe_path(root, _string(download_raw["work_dir"], "download.work_dir"), "work_dir"),
-        artifact_dir=_safe_path(
-            root, _string(download_raw["artifact_dir"], "download.artifact_dir"), "artifact_dir"
-        ),
-        quarantine_dir=_safe_path(
-            root, _string(download_raw["quarantine_dir"], "download.quarantine_dir"), "quarantine_dir"
-        ),
+        artifact_dir=_safe_path(root, _string(download_raw["artifact_dir"], "download.artifact_dir"), "artifact_dir"),
+        quarantine_dir=_safe_path(root, _string(download_raw["quarantine_dir"], "download.quarantine_dir"), "quarantine_dir"),
         db_path=_safe_path(root, _string(download_raw["db_path"], "download.db_path"), "db_path"),
-        report_dir=_safe_path(
-            root, _string(download_raw["report_dir"], "download.report_dir"), "report_dir"
-        ),
+        report_dir=_safe_path(root, _string(download_raw["report_dir"], "download.report_dir"), "report_dir"),
         retries=_integer(download_raw["retries"], "download.retries", 0, 10),
-        retry_backoff_ms=_integer(
-            download_raw["retry_backoff_ms"], "download.retry_backoff_ms", 0, 10_000
-        ),
+        retry_backoff_ms=_integer(download_raw["retry_backoff_ms"], "download.retry_backoff_ms", 0, 10_000),
         chunk_size=_integer(download_raw["chunk_size"], "download.chunk_size", 1024, 1_048_576),
-        max_artifact_bytes=_integer(
-            download_raw["max_artifact_bytes"], "download.max_artifact_bytes", 1, 52_428_800
+        max_artifact_bytes=max_artifact,
+        recovery_contract=contract,
+        chunk_retries=_integer(download_raw.get("chunk_retries", 2), "download.chunk_retries", 0, 10),
+        max_recovery_bytes=_integer(
+            download_raw.get("max_recovery_bytes", max_artifact),
+            "download.max_recovery_bytes",
+            1,
+            52_428_800,
         ),
     )
 
